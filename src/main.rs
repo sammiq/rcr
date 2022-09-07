@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum, ValueHint};
 use log::{debug, info, trace, warn};
 use roxmltree::{Document, Node};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use camino::{Utf8Path, Utf8PathBuf};
 
 
 #[derive(Debug, Parser)]
@@ -17,7 +17,7 @@ struct Cli {
 
     /// name of the dat file to use as reference
     #[clap(value_parser, value_hint = ValueHint::FilePath)]
-    dat_file: PathBuf,
+    dat_file: Utf8PathBuf,
 
     /// verbose mode, add more of these for more information
     #[clap(short, long, action = clap::ArgAction::Count)]
@@ -46,7 +46,7 @@ struct CheckArgs {
 
     /// list of files to check against reference dat file
     #[clap(required = true, value_parser, value_hint = ValueHint::FilePath)]
-    files: Vec<PathBuf>,
+    files: Vec<String>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum, strum::Display)]
@@ -63,17 +63,17 @@ fn main() -> Result<()> {
     set_logging_level(args.verbose);
     debug!("raw args: {:?}", args);
 
-    trace!("reading dat file {}", args.dat_file.display());
+    trace!("reading dat file {}", args.dat_file);
     //read in the xml to buffer, roxmltree is a bit fiddly with ownership
     let df_buffer = std::fs::read_to_string(&args.dat_file).with_context(|| "Unable to read reference dat file - {err}")?;
     let df_xml = Document::parse(df_buffer.as_str()).with_context(|| "Unable to parse reference dat file - {err}")?;
-    info!("dat file {} read successfully", args.dat_file.display());
+    info!("dat file {} read successfully", args.dat_file);
 
     //debug!("raw xml: {:?}", df_xml);
     match args.command {
         Commands::Check(check_args) => {
             //windows will not glob externally, so we need to do it here
-            let input_files: Vec<PathBuf> = check_args.files.iter().flat_map(|f| expand_path_ignore_invalid(f)).collect();
+            let input_files : Vec<Utf8PathBuf> = check_args.files.iter().flat_map(|f| expand_path_ignore_invalid(f)).collect();
 
             for file_path in input_files {
                 let hash_result = hash_candidate_file(check_args.method, &file_path);
@@ -82,7 +82,7 @@ fn main() -> Result<()> {
                         let found = check_file(&df_xml, &check_args, &file_path, &hash_string);
                         debug!("found nodes by hash {:?}", found);
                     }
-                    Err(err) => warn!("could not hash '{}', file will be skipped - {err}", file_path.display()),
+                    Err(err) => warn!("could not hash '{}', file will be skipped - {err}", file_path),
                 }
             }
         }
@@ -90,8 +90,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Path, hash: &str) -> Vec<Node<'a, 'a>> {
-    let file_name = file_path.file_name().unwrap().to_string_lossy(); // this should never fail in this circumstance
+fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8Path, hash: &str) -> Vec<Node<'a, 'a>> {
+    let file_name = file_path.file_name().unwrap(); // this should never fail in this circumstance
     debug!("hash for '{file_name}' = {hash}");
     let found_nodes = find_nodes_by_hash_attribute(df_xml, check_args.method, hash, check_args.multiple);
     if found_nodes.is_empty() {
@@ -116,16 +116,19 @@ fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Path
             let new_name = names.iter().next().unwrap(); // should never fail as we checked length
             if file_name != *new_name {
                 debug!("renaming {} to {}", file_name, new_name);
-                rename_file(file_path, new_name);
+                rename_file(&file_path.as_std_path(), new_name);
             }
         }
     }
     found_nodes
 }
 
-fn expand_path_ignore_invalid(path: &Path) -> Vec<PathBuf> {
-    match glob::glob(&path.to_string_lossy()) {
-        Ok(paths) => paths.filter_map(Result::ok).collect(),
+fn expand_path_ignore_invalid(pattern: &str) -> Vec<Utf8PathBuf> {
+    match glob::glob(pattern) {
+        Ok(paths) => paths
+            .filter_map(Result::ok)
+            .map(| f| Utf8PathBuf::from_path_buf(f).unwrap())
+            .collect(),
         Err(_) => Vec::new(),
     }
 }
@@ -142,11 +145,11 @@ fn set_logging_level(verbose: u8) {
     info!("Log Level set to {}", max_level);
 }
 
-fn hash_candidate_file(method: MatchMethod, file: &Path) -> Result<String> {
+fn hash_candidate_file(method: MatchMethod, file: &Utf8Path) -> Result<String> {
     match method {
-        MatchMethod::Sha1 => calc_sha1_for_file(file),
-        MatchMethod::Md5 => calc_md5_for_file(file),
-        MatchMethod::Crc => calc_crc_for_file(file),
+        MatchMethod::Sha1 => calc_sha1_for_file(file.as_std_path()),
+        MatchMethod::Md5 => calc_md5_for_file(file.as_std_path()),
+        MatchMethod::Crc => calc_crc_for_file(file.as_std_path()),
     }
 }
 
