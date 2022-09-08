@@ -1,6 +1,6 @@
 mod file_ops;
 
-use crate::file_ops::{calc_crc_for_file, calc_md5_for_file, calc_sha1_for_file, rename_file};
+use crate::file_ops::{calc_crc_for_file, calc_md5_for_file, calc_sha1_for_file, rename_file_if_possible};
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum, ValueHint};
 use log::{debug, info, trace, warn};
@@ -116,7 +116,7 @@ fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8
             let new_name = names.iter().next().unwrap(); // should never fail as we checked length
             if file_name != *new_name {
                 debug!("renaming {} to {}", file_name, new_name);
-                rename_file(&file_path.as_std_path(), new_name);
+                rename_file_if_possible(&file_path, new_name);
             }
         }
     }
@@ -147,9 +147,9 @@ fn set_logging_level(verbose: u8) {
 
 fn hash_candidate_file(method: MatchMethod, file: &Utf8Path) -> Result<String> {
     match method {
-        MatchMethod::Sha1 => calc_sha1_for_file(file.as_std_path()),
-        MatchMethod::Md5 => calc_md5_for_file(file.as_std_path()),
-        MatchMethod::Crc => calc_crc_for_file(file.as_std_path()),
+        MatchMethod::Sha1 => calc_sha1_for_file(file),
+        MatchMethod::Md5 => calc_md5_for_file(file),
+        MatchMethod::Crc => calc_crc_for_file(file),
     }
 }
 
