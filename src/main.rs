@@ -46,7 +46,7 @@ struct CheckArgs {
 
     /// list of files to check against reference dat file
     #[clap(required = true, value_parser, value_hint = ValueHint::FilePath)]
-    files: Vec<String>,
+    files: Vec<Utf8PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum, strum::Display)]
@@ -59,7 +59,8 @@ enum MatchMethod {
 fn main() -> Result<()> {
     simple_logger::SimpleLogger::new().init().unwrap();
 
-    let args = Cli::parse();
+    //wild takes care of globbing on windows instead of manually doing it ourselves
+    let args = Cli::parse_from(wild::args_os());
     set_logging_level(args.verbose);
     debug!("raw args: {:?}", args);
 
@@ -72,14 +73,11 @@ fn main() -> Result<()> {
     //debug!("raw xml: {:?}", df_xml);
     match args.command {
         Commands::Check(check_args) => {
-            //windows will not glob externally, so we need to do it here
-            let input_files : Vec<Utf8PathBuf> = check_args.files.iter().flat_map(|f| expand_path_ignore_invalid(f)).collect();
-
-            for file_path in input_files {
-                let hash_result = hash_candidate_file(check_args.method, &file_path);
+            for file_path in &check_args.files {
+                let hash_result = hash_candidate_file(check_args.method, file_path);
                 match hash_result {
                     Ok(hash_string) => {
-                        let found = check_file(&df_xml, &check_args, &file_path, &hash_string);
+                        let found = check_file(&df_xml, &check_args, file_path, &hash_string);
                         debug!("found nodes by hash {:?}", found);
                     }
                     Err(err) => warn!("could not hash '{}', file will be skipped - {err}", file_path),
@@ -116,21 +114,11 @@ fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8
             let new_name = names.iter().next().unwrap(); // should never fail as we checked length
             if file_name != *new_name {
                 debug!("renaming {} to {}", file_name, new_name);
-                rename_file_if_possible(&file_path, new_name);
+                rename_file_if_possible(file_path, new_name);
             }
         }
     }
     found_nodes
-}
-
-fn expand_path_ignore_invalid(pattern: &str) -> Vec<Utf8PathBuf> {
-    match glob::glob(pattern) {
-        Ok(paths) => paths
-            .filter_map(Result::ok)
-            .map(| f| Utf8PathBuf::from_path_buf(f).unwrap())
-            .collect(),
-        Err(_) => Vec::new(),
-    }
 }
 
 fn set_logging_level(verbose: u8) {
