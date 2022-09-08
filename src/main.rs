@@ -109,8 +109,15 @@ fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8
         let mut names = HashSet::new();
 
         for node in &found_nodes {
-            //FIXME verify its a "rom" node?
-            let node_name = node.attribute("name").unwrap_or(""); //this shouldn't happen but don't error out if it does
+            let node_tag = node.tag_name().name();
+            let node_attr = node.attribute("name");
+
+            //ignore matches that are not rom nodes or don't have a name
+            if node_tag != "rom" || node_attr.is_none() {
+                continue;
+            }
+
+            let node_name = node_attr.unwrap(); //checked above
             names.insert(node_name);
 
             if node_name == file_name {
@@ -158,13 +165,13 @@ fn find_nodes_by_hash_attribute<'a>(df_xml: &'a Document, method: MatchMethod, h
     if multiple {
         df_xml
             .descendants()
-            .filter(|n| n.attribute(m.as_str()).map(|s| s.to_string().to_ascii_lowercase()) == Some(hash_string.to_ascii_lowercase()))
+            .filter(|n| n.attribute(m.as_str()).map(|s| s.to_ascii_lowercase()) == Some(hash_string.to_ascii_lowercase()))
             .collect()
     } else {
         let mut vec = Vec::new();
         df_xml
             .descendants()
-            .find(|n| n.attribute(m.as_str()).map(|s| s.to_string().to_ascii_lowercase()) == Some(hash_string.to_ascii_lowercase()))
+            .find(|n| n.attribute(m.as_str()).map(|s| s.to_ascii_lowercase()) == Some(hash_string.to_ascii_lowercase()))
             .iter()
             .for_each(|a| vec.push(*a)); //slightly convoluted because iter() returns a ref instead
         vec
