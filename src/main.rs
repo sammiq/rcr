@@ -49,11 +49,22 @@ struct CheckArgs {
     files: Vec<Utf8PathBuf>,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum, strum::Display)]
+#[derive(Copy, Clone, Debug, ValueEnum)]
 enum MatchMethod {
     Sha1,
     Md5,
     Crc,
+}
+
+//do this to get Display and ToString traits
+impl std::fmt::Display for MatchMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match *self {
+            MatchMethod::Sha1 => write!(f, "sha1"),
+            MatchMethod::Md5 => write!(f, "md5"),
+            MatchMethod::Crc => write!(f, "crc"),
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -142,18 +153,18 @@ fn hash_candidate_file(method: MatchMethod, file: &Utf8Path) -> Result<String> {
 }
 
 fn find_nodes_by_hash_attribute<'a>(df_xml: &'a Document, method: MatchMethod, hash_string: &str, multiple: bool) -> Vec<Node<'a, 'a>> {
-    let m = method.to_string().to_ascii_lowercase();
+    let m = method.to_string();
     debug!("looking up '{}' using method '{}'", hash_string, m);
     if multiple {
         df_xml
             .descendants()
-            .filter(|n| n.attribute(&*m).map(|s| s.to_string().to_ascii_lowercase()) == Some(hash_string.to_ascii_lowercase()))
+            .filter(|n| n.attribute(m.as_str()).map(|s| s.to_string().to_ascii_lowercase()) == Some(hash_string.to_ascii_lowercase()))
             .collect()
     } else {
         let mut vec = Vec::new();
         df_xml
             .descendants()
-            .find(|n| n.attribute(&*m).map(|s| s.to_string().to_ascii_lowercase()) == Some(hash_string.to_ascii_lowercase()))
+            .find(|n| n.attribute(m.as_str()).map(|s| s.to_string().to_ascii_lowercase()) == Some(hash_string.to_ascii_lowercase()))
             .iter()
             .for_each(|a| vec.push(*a)); //slightly convoluted because iter() returns a ref instead
         vec

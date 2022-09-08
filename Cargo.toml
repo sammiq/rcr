@@ -15,7 +15,6 @@ md-5 = "0.10.1"
 roxmltree = "0.15.0"
 sha1 = "0.10.1"
 simple_logger = { version = "2.2.0", features = ["colors", "stderr"] }
-strum = { version = "0.24.1", features = ["derive"] }
 wild = "2.1.0"
 
 [profile.release]
