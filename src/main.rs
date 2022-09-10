@@ -1,13 +1,14 @@
+mod entensions;
 mod file_ops;
 
-use crate::file_ops::{calc_crc_for_file, calc_md5_for_file, calc_sha1_for_file, rename_file_if_possible};
+use crate::entensions::IfSome;
+use crate::file_ops::{calc_md5_for_file, calc_sha1_for_file, calc_sha256_for_file, rename_file_if_possible};
 use anyhow::{Context, Result};
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum, ValueHint};
 use log::{debug, info, trace, warn};
 use roxmltree::{Document, Node};
-use std::collections::HashSet;
-use camino::{Utf8Path, Utf8PathBuf};
-
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Parser)]
 #[clap(version, about, long_about = None)]
@@ -32,15 +33,15 @@ enum Commands {
 
 #[derive(Debug, Args)]
 struct CheckArgs {
-    /// method to use for matching reference entries
+    /// method to use for matching reference entries (note: Sha256 is not well supported)
     #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1)]
     method: MatchMethod,
 
-    /// multiple match mode for merged sets
+    /// fast match mode for single rom games, may show incorrect names if multiple identical hashes
     #[clap(short, long)]
-    multiple: bool,
+    fast: bool,
 
-    /// rename mismatched files to reference filename
+    /// rename mismatched files to reference filename if unambiguous
     #[clap(short, long)]
     rename: bool,
 
@@ -51,24 +52,15 @@ struct CheckArgs {
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum MatchMethod {
+    Sha256,
     Sha1,
     Md5,
-    Crc,
-}
-
-//do this to get Display and ToString traits
-impl std::fmt::Display for MatchMethod {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match *self {
-            MatchMethod::Sha1 => write!(f, "sha1"),
-            MatchMethod::Md5 => write!(f, "md5"),
-            MatchMethod::Crc => write!(f, "crc"),
-        }
-    }
 }
 
 fn main() -> Result<()> {
-    simple_logger::SimpleLogger::new().init().unwrap();
+    simple_logger::SimpleLogger::new()
+        .init()
+        .expect("should be able to initialize the logger");
 
     //wild takes care of globbing on windows instead of manually doing it ourselves
     let args = Cli::parse_from(wild::args_os());
@@ -77,21 +69,46 @@ fn main() -> Result<()> {
 
     trace!("reading dat file {}", args.dat_file);
     //read in the xml to buffer, roxmltree is a bit fiddly with ownership
-    let df_buffer = std::fs::read_to_string(&args.dat_file).with_context(|| "Unable to read reference dat file - {err}")?;
-    let df_xml = Document::parse(df_buffer.as_str()).with_context(|| "Unable to parse reference dat file - {err}")?;
+    let df_buffer = std::fs::read_to_string(&args.dat_file).context("Unable to read reference dat file")?;
+    let df_xml = Document::parse(df_buffer.as_str()).context("Unable to parse reference dat file")?;
     info!("dat file {} read successfully", args.dat_file);
 
     //debug!("raw xml: {:?}", df_xml);
     match args.command {
         Commands::Check(check_args) => {
+            //use a b-tree map for natural sorting
+            let mut found_games = BTreeMap::new();
+
+            println!("--FILES--");
             for file_path in &check_args.files {
-                let hash_result = hash_candidate_file(check_args.method, file_path);
-                match hash_result {
-                    Ok(hash_string) => {
-                        let found = check_file(&df_xml, &check_args, file_path, &hash_string);
-                        debug!("found nodes by hash {:?}", found);
-                    }
-                    Err(err) => warn!("could not hash '{}', file will be skipped - {err}", file_path),
+                if !file_path.is_file() {
+                    warn!("{file_path} is not a regular file, skipping it");
+                    continue;
+                }
+                hash_candidate_file(check_args.method, file_path)
+                    .with_context(|| format!("could not hash '{file_path}', file will be skipped"))
+                    .and_then(|hash_string| check_file(&df_xml, &check_args, file_path, &hash_string))
+                    .with_context(|| format!("could not to check '{file_path}', file will be skipped"))
+                    .map(|found_rom_nodes| {
+                        found_rom_nodes.iter().for_each(|rom_node| {
+                            rom_node.parent().filter(is_game_node).if_some(|game_node| {
+                                //use a b-tree set for natural sorting
+                                let found_roms = found_games.entry(game_node).or_insert_with(BTreeSet::new);
+                                found_roms.insert(*rom_node);
+                            });
+                        });
+                    })
+                    .err()
+                    .if_some(|error| warn!("could not process '{file_path}', error was '{error}'"));
+            }
+
+            //process sets
+            if !found_games.is_empty() {
+                println!("--SETS --");
+                for (game, found_roms) in found_games {
+                    check_game(&check_args, &game, &found_roms)
+                        .err()
+                        .if_some(|error| warn!("could not process game, error was '{error}'"));
                 }
             }
         }
@@ -99,44 +116,68 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8Path, hash: &str) -> Vec<Node<'a, 'a>> {
-    let file_name = file_path.file_name().unwrap(); // this should never fail in this circumstance
+fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8Path, hash: &str) -> Result<Vec<Node<'a, 'a>>> {
+    let file_name = file_path.file_name().context("file path should always have a file name")?;
     debug!("hash for '{file_name}' = {hash}");
-    let found_nodes = find_nodes_by_hash_attribute(df_xml, check_args.method, hash, check_args.multiple);
+    let mut found_nodes = find_rom_nodes_by_hash_attribute(df_xml, check_args.method, hash, !check_args.fast);
+    debug!("found nodes by hash {:?}", found_nodes);
     if found_nodes.is_empty() {
+        trace!("found no matches, the file appears to be unknown");
         println!("[MISS] {hash} {file_name} - unknown, no match");
-    } else {
-        let mut names = HashSet::new();
+    } else if found_nodes.len() == 1 {
+        let node = found_nodes.first().expect("should never fail as we checked length");
+        trace!("found single match, will use this one");
+        let node_name = node
+            .attribute("name")
+            .context("rom nodes in reference dat file should always have a name")?;
 
-        for node in &found_nodes {
-            let node_tag = node.tag_name().name();
-            let node_attr = node.attribute("name");
-
-            //ignore matches that are not rom nodes or don't have a name
-            if node_tag != "rom" || node_attr.is_none() {
-                continue;
-            }
-
-            let node_name = node_attr.unwrap(); //checked above
-            names.insert(node_name);
-
-            if node_name == file_name {
-                println!("[ OK ] {hash} {file_name}");
-            } else {
-                println!("[WARN] {hash} {file_name}  - misnamed, should be {}", node_name);
-            }
+        if node_name == file_name {
+            println!("[ OK ] {hash} {file_name}");
+        } else {
+            println!("[WARN] {hash} {file_name}  - misnamed, should be '{node_name}'");
         }
 
-        //only consider rename if a single name found
-        if check_args.rename && names.len() == 1 {
-            let new_name = names.iter().next().unwrap(); // should never fail as we checked length
-            if file_name != *new_name {
-                debug!("renaming {} to {}", file_name, new_name);
-                rename_file_if_possible(file_path, new_name);
-            }
+        if check_args.rename && file_name != node_name {
+            debug!("renaming {file_name} to {node_name}");
+            rename_file_if_possible(file_path, node_name);
+        }
+    } else {
+        trace!("found multiple matches for hash, trying to match by name");
+        if found_nodes.iter().any(|node| node.attribute("name") == Some(file_name)) {
+            trace!("found at least one match for name, the file is ok, remove other nodes");
+            found_nodes.retain(|node| node.attribute("name") == Some(file_name));
+            println!("[ OK ] {hash} {file_name}");
+        } else {
+            trace!("found at least no matches for name, the file is misnamed but could be multiple options");
+            println!("[WARN] {hash} {file_name}  - multiple matches, could be one of:");
+            found_nodes
+                .iter()
+                .map(|node| node.attribute("name"))
+                .for_each(|name| println!("       {hash} {}", name.unwrap_or("???")));
         }
     }
-    found_nodes
+    Ok(found_nodes)
+}
+
+fn check_game(check_args: &CheckArgs, game: &Node, found_roms: &BTreeSet<Node>) -> Result<()> {
+    let all_roms = BTreeSet::from_iter(game.children().filter(is_rom_node));
+    let game_name = game
+        .attribute("name")
+        .context("game nodes in reference dat file should always have a name")?;
+    if found_roms.len() == all_roms.len() {
+        println!("[ OK ]  {game_name}");
+        Ok(())
+    } else {
+        all_roms.difference(found_roms).try_for_each(|missing| {
+            let missing_name = missing
+                .attribute("name")
+                .context("rom nodes in reference dat file should always have a name")?;
+            let missing_hash =
+                get_hash_from_rom_node(missing, check_args.method).context("rom nodes in reference dat file should have a hash")?;
+            println!("[WARN]  {game_name} is missing {missing_hash} {missing_name}");
+            Ok(())
+        })
+    }
 }
 
 fn set_logging_level(verbose: u8) {
@@ -153,25 +194,55 @@ fn set_logging_level(verbose: u8) {
 
 fn hash_candidate_file(method: MatchMethod, file: &Utf8Path) -> Result<String> {
     match method {
+        MatchMethod::Sha256 => calc_sha256_for_file(file),
         MatchMethod::Sha1 => calc_sha1_for_file(file),
         MatchMethod::Md5 => calc_md5_for_file(file),
-        MatchMethod::Crc => calc_crc_for_file(file),
     }
 }
 
-fn find_nodes_by_hash_attribute<'a>(df_xml: &'a Document, method: MatchMethod, hash_string: &str, multiple: bool) -> Vec<Node<'a, 'a>> {
-    let m = method.to_string();
-    debug!("looking up '{}' using method '{}'", hash_string, m);
+fn hash_attribute_name_for_method(method: MatchMethod) -> &'static str {
+    match method {
+        MatchMethod::Sha256 => "sha256",
+        MatchMethod::Sha1 => "sha1",
+        MatchMethod::Md5 => "md5",
+    }
+}
+
+fn is_game_node(n: &Node) -> bool {
+    n.tag_name().name() == "game"
+}
+
+fn is_rom_node(n: &Node) -> bool {
+    n.tag_name().name() == "rom"
+}
+
+fn get_hash_from_rom_node(node: &Node, method: MatchMethod) -> Option<String> {
+    node.attribute(hash_attribute_name_for_method(method))
+        .map(str::to_ascii_lowercase)
+}
+
+fn find_rom_nodes_by_hash_attribute<'a>(
+    df_xml: &'a Document,
+    method: MatchMethod,
+    hash_string: &str,
+    multiple: bool,
+) -> Vec<Node<'a, 'a>> {
+    debug!(
+        "looking up '{hash_string}' using method '{}'",
+        hash_attribute_name_for_method(method)
+    );
     if multiple {
         df_xml
             .descendants()
-            .filter(|n| n.attribute(m.as_str()).map(|s| s.to_ascii_lowercase()) == Some(hash_string.to_ascii_lowercase()))
+            .filter(is_rom_node)
+            .filter(|n| get_hash_from_rom_node(n, method) == Some(hash_string.to_ascii_lowercase()))
             .collect()
     } else {
         let mut vec = Vec::new();
         df_xml
             .descendants()
-            .find(|n| n.attribute(m.as_str()).map(|s| s.to_ascii_lowercase()) == Some(hash_string.to_ascii_lowercase()))
+            .filter(is_rom_node)
+            .find(|n| get_hash_from_rom_node(n, method) == Some(hash_string.to_ascii_lowercase()))
             .iter()
             .for_each(|a| vec.push(*a)); //slightly convoluted because iter() returns a ref instead
         vec

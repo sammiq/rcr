@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+use camino::{Utf8Path, Utf8PathBuf};
 use log::{debug, trace, warn};
 use sha1::Digest;
 use std::fs::File;
 use std::io::{copy, BufReader, Write};
-use camino::{Utf8Path, Utf8PathBuf};
 
 pub fn rename_file_if_possible(in_file: &Utf8Path, file_name: &str) {
     let mut out_file = Utf8PathBuf::from(in_file);
@@ -28,9 +28,11 @@ pub fn calc_sha1_for_file(file: &Utf8Path) -> Result<String> {
     Ok(base16ct::lower::encode_string(&hash))
 }
 
-pub fn calc_crc_for_file(_: &Utf8Path) -> Result<String> {
-    //FIXME do the crc
-    Err(anyhow!("not implemented"))
+pub fn calc_sha256_for_file(file: &Utf8Path) -> Result<String> {
+    let mut hasher = sha2::Sha256::new();
+    calc_hash_for_file(file, &mut hasher)?;
+    let hash = hasher.finalize();
+    Ok(base16ct::lower::encode_string(&hash))
 }
 
 fn calc_hash_for_file<T: ?Sized>(file: &Utf8Path, hasher: &mut T) -> Result<()>
