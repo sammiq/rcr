@@ -1,7 +1,7 @@
-mod entensions;
+mod extensions;
 mod file_ops;
 
-use crate::entensions::IfSome;
+use crate::extensions::IfSome;
 use crate::file_ops::{calc_md5_for_file, calc_sha1_for_file, calc_sha256_for_file, rename_file_if_possible};
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
