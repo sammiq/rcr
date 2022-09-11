@@ -17,7 +17,7 @@ pub fn get_name_from_node<'a>(node: &'a Node) -> Option<&'a str> {
     node.attribute("name")
 }
 
-pub fn find_rom_nodes_by_hash_attribute<'a>(
+pub fn find_rom_nodes_by_hash<'a>(
     df_xml: &'a Document,
     method: &str,
     hash_string: &str,

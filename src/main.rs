@@ -6,7 +6,7 @@ use crate::dat_ops::*;
 use crate::extensions::*;
 use crate::file_ops::*;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, ensure, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum, ValueHint};
 use log::{debug, info, trace, warn};
@@ -53,7 +53,7 @@ struct CheckArgs {
     files: Vec<Utf8PathBuf>,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
 enum MatchMethod {
     Sha256,
     Sha1,
@@ -78,6 +78,13 @@ fn main() -> Result<()> {
 
     match args.command {
         Commands::Check(check_args) => {
+
+            //ensure that the dat file will support this usage
+            let method = sanity_check_match_method(&df_xml, check_args.method)?;
+            if method != check_args.method {
+                warn!("matching files using {} after checking, as reference dat file missing those data", hash_name_for_method(method));
+            }
+
             //use a b-tree map for natural sorting
             let mut found_games = BTreeMap::new();
 
@@ -87,9 +94,9 @@ fn main() -> Result<()> {
                     warn!("{file_path} is not a regular file, skipping it");
                     continue;
                 }
-                hash_candidate_file_with_method(file_path, check_args.method)
+                hash_candidate_file_with_method(file_path, method)
                     .with_context(|| format!("could not hash '{file_path}', file will be skipped"))
-                    .and_then(|hash_string| check_file(&df_xml, &check_args, file_path, &hash_string))
+                    .and_then(|hash_string| check_file(&df_xml, &check_args, file_path, &hash_string, method))
                     .with_context(|| format!("could not to check '{file_path}', file will be skipped"))
                     .map(|found_rom_nodes| {
                         found_rom_nodes.iter().for_each(|rom_node| {
@@ -108,7 +115,7 @@ fn main() -> Result<()> {
             if !found_games.is_empty() {
                 println!("--SETS --");
                 for (game, found_roms) in found_games {
-                    check_game(&check_args, &game, &found_roms)
+                    check_game(method, &game, &found_roms)
                         .err()
                         .if_some(|error| warn!("could not process game, error was '{error}'"));
                 }
@@ -118,11 +125,33 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8Path, hash: &str) -> Result<Vec<Node<'a, 'a>>> {
+fn sanity_check_match_method(df_xml: & Document, method: MatchMethod) -> Result<MatchMethod> {
+    sanity_check_match_method_inner(df_xml, method, 0)
+}
+
+fn sanity_check_match_method_inner(df_xml: & Document, method: MatchMethod, recursion: u8) -> Result<MatchMethod> {
+    //check whether this file has those methods
+    if df_xml.descendants()
+        .filter(is_rom_node)
+        .any(|n| get_hash_from_rom_node(&n, hash_name_for_method(method)).is_some()) {
+        Ok(method)
+    } else {
+        match method {
+            MatchMethod::Sha256 => sanity_check_match_method_inner(df_xml, MatchMethod::Sha1, recursion + 1),
+            MatchMethod::Sha1 => sanity_check_match_method_inner(df_xml, MatchMethod::Md5, recursion + 1),
+            MatchMethod::Md5 => {
+                //if we hit here and recursion > 0 then don't keep going as it means we've already tried Sha1
+                ensure!(recursion == 0, "no valid methods found in reference dat file");
+                sanity_check_match_method_inner(df_xml, MatchMethod::Sha1, recursion + 1)
+            }
+        }
+    }
+}
+
+fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8Path, hash: &str, method: MatchMethod) -> Result<Vec<Node<'a, 'a>>> {
     let file_name = file_path.file_name().context("file path should always have a file name")?;
     debug!("hash for '{file_name}' = {hash}");
-    let mut found_nodes =
-        find_rom_nodes_by_hash_attribute(df_xml, hash_attribute_name_for_method(check_args.method), hash, check_args.fast);
+    let mut found_nodes = find_rom_nodes_by_hash(df_xml, hash_name_for_method(method), hash, check_args.fast);
     debug!("found nodes by hash {:?}", found_nodes);
     if found_nodes.is_empty() {
         trace!("found no matches, the file appears to be unknown");
@@ -160,7 +189,7 @@ fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8
     Ok(found_nodes)
 }
 
-fn check_game(check_args: &CheckArgs, game: &Node, found_roms: &BTreeSet<Node>) -> Result<()> {
+fn check_game(method: MatchMethod, game: &Node, found_roms: &BTreeSet<Node>) -> Result<()> {
     let all_roms = BTreeSet::from_iter(game.children().filter(is_rom_node));
     let game_name = get_name_from_node(game).context("game nodes in reference dat file should always have a name")?;
     if found_roms.len() == all_roms.len() {
@@ -169,7 +198,7 @@ fn check_game(check_args: &CheckArgs, game: &Node, found_roms: &BTreeSet<Node>) 
     } else {
         all_roms.difference(found_roms).try_for_each(|missing| {
             let missing_name = get_name_from_node(missing).context("rom nodes in reference dat file should always have a name")?;
-            let missing_hash = get_hash_from_rom_node(missing, hash_attribute_name_for_method(check_args.method))
+            let missing_hash = get_hash_from_rom_node(missing, hash_name_for_method(method))
                 .context("rom nodes in reference dat file should have a hash")?;
             println!("[WARN]  {game_name} is missing {missing_hash} {missing_name}");
             Ok(())
@@ -197,7 +226,7 @@ fn hash_candidate_file_with_method(file: &Utf8Path, method: MatchMethod) -> Resu
     }
 }
 
-fn hash_attribute_name_for_method(method: MatchMethod) -> &'static str {
+fn hash_name_for_method(method: MatchMethod) -> &'static str {
     match method {
         MatchMethod::Sha256 => "sha256",
         MatchMethod::Sha1 => "sha1",
