@@ -8,7 +8,7 @@ use crate::file_ops::*;
 
 use anyhow::{Context, ensure, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use clap::{Args, Parser, Subcommand, ValueEnum, ValueHint};
+use clap::{Parser, ValueEnum, ValueHint};
 use log::{debug, info, trace, warn};
 use roxmltree::{Document, Node};
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,26 +16,11 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Parser)]
 #[clap(version, about, long_about = None)]
 struct Cli {
-    #[clap(subcommand)]
-    command: Commands,
-
-    /// name of the dat file to use as reference
-    #[clap(value_parser, value_hint = ValueHint::FilePath)]
-    dat_file: Utf8PathBuf,
 
     /// verbose mode, add more of these for more information
     #[clap(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
-}
 
-#[derive(Debug, Subcommand)]
-enum Commands {
-    /// checks files against dat file
-    Check(CheckArgs),
-}
-
-#[derive(Debug, Args)]
-struct CheckArgs {
     /// method to use for matching reference entries (note: Sha256 is not well supported)
     #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1)]
     method: MatchMethod,
@@ -47,6 +32,10 @@ struct CheckArgs {
     /// rename mismatched files to reference filename if unambiguous
     #[clap(short, long)]
     rename: bool,
+
+    /// name of the dat file to use as reference
+    #[clap(value_parser, value_hint = ValueHint::FilePath)]
+    dat_file: Utf8PathBuf,
 
     /// list of files to check against reference dat file
     #[clap(required = true, value_parser, value_hint = ValueHint::FilePath)]
@@ -76,52 +65,48 @@ fn main() -> Result<()> {
     let df_xml = Document::parse(df_buffer.as_str()).context("Unable to parse reference dat file")?;
     info!("dat file {} read successfully", args.dat_file);
 
-    match args.command {
-        Commands::Check(check_args) => {
+    //ensure that the dat file will support this usage
+    let method = sanity_check_match_method(&df_xml, args.method)?;
+    if method != args.method {
+        warn!("matching files using {} after checking, as reference dat file missing those data", hash_name_for_method(method));
+    }
 
-            //ensure that the dat file will support this usage
-            let method = sanity_check_match_method(&df_xml, check_args.method)?;
-            if method != check_args.method {
-                warn!("matching files using {} after checking, as reference dat file missing those data", hash_name_for_method(method));
-            }
+    //use a b-tree map for natural sorting
+    let mut found_games = BTreeMap::new();
 
-            //use a b-tree map for natural sorting
-            let mut found_games = BTreeMap::new();
+    println!("--FILES--");
+    for file_path in &args.files {
+        if !file_path.is_file() {
+            warn!("{file_path} is not a regular file, skipping it");
+            continue;
+        }
+        hash_candidate_file_with_method(file_path, method)
+            .with_context(|| format!("could not hash '{file_path}', file will be skipped"))
+            .and_then(|hash_string| check_file(&df_xml, &args, file_path, &hash_string, method))
+            .with_context(|| format!("could not to check '{file_path}', file will be skipped"))
+            .map(|found_rom_nodes| {
+                found_rom_nodes.iter().for_each(|rom_node| {
+                    rom_node.parent().filter(is_game_node).if_some(|game_node| {
+                        //use a b-tree set for natural sorting
+                        let found_roms = found_games.entry(game_node).or_insert_with(BTreeSet::new);
+                        found_roms.insert(*rom_node);
+                    });
+                });
+            })
+            .err()
+            .if_some(|error| warn!("could not process '{file_path}', error was '{error}'"));
+    }
 
-            println!("--FILES--");
-            for file_path in &check_args.files {
-                if !file_path.is_file() {
-                    warn!("{file_path} is not a regular file, skipping it");
-                    continue;
-                }
-                hash_candidate_file_with_method(file_path, method)
-                    .with_context(|| format!("could not hash '{file_path}', file will be skipped"))
-                    .and_then(|hash_string| check_file(&df_xml, &check_args, file_path, &hash_string, method))
-                    .with_context(|| format!("could not to check '{file_path}', file will be skipped"))
-                    .map(|found_rom_nodes| {
-                        found_rom_nodes.iter().for_each(|rom_node| {
-                            rom_node.parent().filter(is_game_node).if_some(|game_node| {
-                                //use a b-tree set for natural sorting
-                                let found_roms = found_games.entry(game_node).or_insert_with(BTreeSet::new);
-                                found_roms.insert(*rom_node);
-                            });
-                        });
-                    })
-                    .err()
-                    .if_some(|error| warn!("could not process '{file_path}', error was '{error}'"));
-            }
-
-            //process sets
-            if !found_games.is_empty() {
-                println!("--SETS --");
-                for (game, found_roms) in found_games {
-                    check_game(method, &game, &found_roms)
-                        .err()
-                        .if_some(|error| warn!("could not process game, error was '{error}'"));
-                }
-            }
+    //process sets
+    if !found_games.is_empty() {
+        println!("--SETS --");
+        for (game, found_roms) in found_games {
+            check_game(method, &game, &found_roms)
+                .err()
+                .if_some(|error| warn!("could not process game, error was '{error}'"));
         }
     }
+
     Ok(())
 }
 
@@ -148,10 +133,10 @@ fn sanity_check_match_method_inner(df_xml: & Document, method: MatchMethod, recu
     }
 }
 
-fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8Path, hash: &str, method: MatchMethod) -> Result<Vec<Node<'a, 'a>>> {
+fn check_file<'a>(df_xml: &'a Document, args: &Cli, file_path: &Utf8Path, hash: &str, method: MatchMethod) -> Result<Vec<Node<'a, 'a>>> {
     let file_name = file_path.file_name().context("file path should always have a file name")?;
     debug!("hash for '{file_name}' = {hash}");
-    let mut found_nodes = find_rom_nodes_by_hash(df_xml, hash_name_for_method(method), hash, check_args.fast);
+    let mut found_nodes = find_rom_nodes_by_hash(df_xml, hash_name_for_method(method), hash, args.fast);
     debug!("found nodes by hash {:?}", found_nodes);
     if found_nodes.is_empty() {
         trace!("found no matches, the file appears to be unknown");
@@ -167,7 +152,7 @@ fn check_file<'a>(df_xml: &'a Document, check_args: &CheckArgs, file_path: &Utf8
             println!("[WARN] {hash} {file_name}  - misnamed, should be '{node_name}'");
         }
 
-        if check_args.rename && file_name != node_name {
+        if args.rename && file_name != node_name {
             debug!("renaming {file_name} to {node_name}");
             rename_file_if_possible(file_path, node_name);
         }
