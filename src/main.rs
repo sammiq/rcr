@@ -6,17 +6,17 @@ use crate::dat_ops::*;
 use crate::extensions::*;
 use crate::file_ops::*;
 
-use anyhow::{Context, ensure, Result};
+use anyhow::{ensure, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, ValueEnum, ValueHint};
 use log::{debug, info, trace, warn};
 use roxmltree::{Document, Node};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
 
 #[derive(Debug, Parser)]
 #[clap(version, about, long_about = None)]
 struct Cli {
-
     /// verbose mode, add more of these for more information
     #[clap(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -68,7 +68,10 @@ fn main() -> Result<()> {
     //ensure that the dat file will support this usage
     let method = sanity_check_match_method(&df_xml, args.method)?;
     if method != args.method {
-        warn!("matching files using {} after checking, as reference dat file missing those data", hash_name_for_method(method));
+        warn!(
+            "matching files using {} after checking, as reference dat file missing those data",
+            hash_name_for_method(method)
+        );
     }
 
     //use a b-tree map for natural sorting
@@ -80,21 +83,43 @@ fn main() -> Result<()> {
             warn!("{file_path} is not a regular file, skipping it");
             continue;
         }
-        hash_candidate_file_with_method(file_path, method)
-            .with_context(|| format!("could not hash '{file_path}', file will be skipped"))
-            .and_then(|hash_string| check_file(&df_xml, &args, file_path, &hash_string, method))
-            .with_context(|| format!("could not to check '{file_path}', file will be skipped"))
-            .map(|found_rom_nodes| {
-                found_rom_nodes.iter().for_each(|rom_node| {
-                    rom_node.parent().filter(is_game_node).if_some(|game_node| {
-                        //use a b-tree set for natural sorting
-                        let found_roms = found_games.entry(game_node).or_insert_with(BTreeSet::new);
-                        found_roms.insert(*rom_node);
-                    });
-                });
-            })
-            .err()
-            .if_some(|error| warn!("could not process '{file_path}', error was '{error}'"));
+
+        if file_path.extension() == Some("zip") {
+            hash_zip_file_contents(file_path, method)
+                .map(|hashed| {
+                    for (file, hash_string) in hashed {
+                        let mut inner_path = Utf8PathBuf::from(&file);
+                        inner_path.push(file);
+                        check_file(&df_xml, &inner_path, &hash_string, method, args.fast, false)
+                            .map(|found_rom_nodes| {
+                                for rom_node in found_rom_nodes {
+                                    rom_node.parent().filter(is_game_node).if_some(|game_node| {
+                                        //use a b-tree set for natural sorting
+                                        found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
+                                    });
+                                }
+                            })
+                            .err()
+                            .if_some(|error| warn!("could not process '{inner_path}', skipping; error was '{error}'"));
+                    }
+                })
+                .err()
+                .if_some(|error| warn!("could not process '{file_path}', error was '{error}'"));
+        } else {
+            reader_for_filename(file_path)
+                .and_then(|mut reader| hash_candidate_file_with_method(&mut reader, method))
+                .and_then(|hash_string| check_file(&df_xml, file_path, &hash_string, method, args.fast, args.rename))
+                .map(|found_rom_nodes| {
+                    for rom_node in found_rom_nodes {
+                        rom_node.parent().filter(is_game_node).if_some(|game_node| {
+                            //use a b-tree set for natural sorting
+                            found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
+                        });
+                    }
+                })
+                .err()
+                .if_some(|error| warn!("could not process '{file_path}', skipping; error was '{error}'"));
+        }
     }
 
     //process sets
@@ -110,15 +135,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn sanity_check_match_method(df_xml: & Document, method: MatchMethod) -> Result<MatchMethod> {
+fn sanity_check_match_method(df_xml: &Document, method: MatchMethod) -> Result<MatchMethod> {
     sanity_check_match_method_inner(df_xml, method, 0)
 }
 
-fn sanity_check_match_method_inner(df_xml: & Document, method: MatchMethod, recursion: u8) -> Result<MatchMethod> {
+fn sanity_check_match_method_inner(df_xml: &Document, method: MatchMethod, recursion: u8) -> Result<MatchMethod> {
     //check whether this file has those methods
-    if df_xml.descendants()
+    if df_xml
+        .descendants()
         .filter(is_rom_node)
-        .any(|n| get_hash_from_rom_node(&n, hash_name_for_method(method)).is_some()) {
+        .any(|n| get_hash_from_rom_node(&n, hash_name_for_method(method)).is_some())
+    {
         Ok(method)
     } else {
         match method {
@@ -133,28 +160,58 @@ fn sanity_check_match_method_inner(df_xml: & Document, method: MatchMethod, recu
     }
 }
 
-fn check_file<'a>(df_xml: &'a Document, args: &Cli, file_path: &Utf8Path, hash: &str, method: MatchMethod) -> Result<Vec<Node<'a, 'a>>> {
+fn hash_zip_file_contents(file: &Utf8Path, method: MatchMethod) -> Result<BTreeMap<String, String>> {
+    let f = File::open(file).with_context(|| format!("could not open file '{file}'"))?;
+    let mut zip = zip::ZipArchive::new(f).with_context(|| format!("could not open '{file}' as a zip file"))?;
+    let mut found_files = BTreeMap::new();
+    for i in 0..zip.len() {
+        let mut inner_file = zip.by_index(i)?; //fix error
+        if inner_file.is_file() {
+            hash_candidate_file_with_method(&mut inner_file, method)
+                .map(|hash| {
+                    debug!("hash for {} in zip {} is {}", inner_file.name(), file, hash);
+                    found_files.insert(inner_file.name().to_string(), hash);
+                })
+                .err()
+                .if_some(|error| warn!("could not process '{}' in zip file '{file}', error was '{error}'", inner_file.name()));
+        }
+    }
+    Ok(found_files)
+}
+
+fn check_file<'a>(
+    df_xml: &'a Document,
+    file_path: &Utf8Path,
+    hash: &str,
+    method: MatchMethod,
+    fast: bool,
+    rename: bool,
+) -> Result<Vec<Node<'a, 'a>>> {
     let file_name = file_path.file_name().context("file path should always have a file name")?;
     debug!("hash for '{file_name}' = {hash}");
-    let mut found_nodes = find_rom_nodes_by_hash(df_xml, hash_name_for_method(method), hash, args.fast);
+    let mut found_nodes = find_rom_nodes_by_hash(df_xml, hash_name_for_method(method), hash, fast);
     debug!("found nodes by hash {:?}", found_nodes);
     if found_nodes.is_empty() {
         trace!("found no matches, the file appears to be unknown");
-        println!("[MISS] {hash} {file_name} - unknown, no match");
+        println!("[MISS] {hash} {file_path} - unknown, no match");
     } else if found_nodes.len() == 1 {
         let node = found_nodes.first().expect("should never fail as we checked length");
         trace!("found single match, will use this one");
         let node_name = get_name_from_node(node).context("rom nodes in reference dat file should always have a name")?;
 
         if node_name == file_name {
-            println!("[ OK ] {hash} {file_name}");
-        } else {
-            println!("[WARN] {hash} {file_name}  - misnamed, should be '{node_name}'");
-        }
-
-        if args.rename && file_name != node_name {
+            println!("[ OK ] {hash} {file_path}");
+        } else if rename {
             debug!("renaming {file_name} to {node_name}");
-            rename_file_if_possible(file_path, node_name);
+            match rename_file_if_possible(file_path, node_name) {
+                Ok(new_path) => println!("[ OK ] {hash} {new_path} (renamed from {file_path}"),
+                Err(err) => {
+                    warn!("could not rename '{file_path}' to '{node_name}' - {err}");
+                    println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
+                }
+            }
+        } else {
+            println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
         }
     } else {
         trace!("found multiple matches for hash, trying to match by name");
@@ -175,7 +232,7 @@ fn check_file<'a>(df_xml: &'a Document, args: &Cli, file_path: &Utf8Path, hash: 
 }
 
 fn check_game(method: MatchMethod, game: &Node, found_roms: &BTreeSet<Node>) -> Result<()> {
-    let all_roms = BTreeSet::from_iter(game.children().filter(is_rom_node));
+    let all_roms: BTreeSet<Node> = game.children().filter(is_rom_node).collect();
     let game_name = get_name_from_node(game).context("game nodes in reference dat file should always have a name")?;
     if found_roms.len() == all_roms.len() {
         println!("[ OK ]  {game_name}");
@@ -203,11 +260,11 @@ fn set_logging_level(verbose: u8) {
     info!("Log Level set to {}", max_level);
 }
 
-fn hash_candidate_file_with_method(file: &Utf8Path, method: MatchMethod) -> Result<String> {
+fn hash_candidate_file_with_method<R: std::io::Read + ?Sized>(reader: &mut R, method: MatchMethod) -> Result<String> {
     match method {
-        MatchMethod::Sha256 => calc_sha256_for_file(file),
-        MatchMethod::Sha1 => calc_sha1_for_file(file),
-        MatchMethod::Md5 => calc_md5_for_file(file),
+        MatchMethod::Sha256 => calc_sha256_for_reader(reader),
+        MatchMethod::Sha1 => calc_sha1_for_reader(reader),
+        MatchMethod::Md5 => calc_md5_for_reader(reader),
     }
 }
 
