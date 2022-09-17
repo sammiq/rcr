@@ -21,12 +21,14 @@ struct Cli {
     #[clap(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 
-    /// method to use for matching reference entries (note: Sha256 is not well supported)
-    #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1)]
+    /// method to use for matching reference entries
+    /// (note: Sha256 is not well supported in dat files from many sources)
+    #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment)]
     method: MatchMethod,
 
-    /// fast match mode for single rom games, may show incorrect names if multiple identical hashes
-    #[clap(short, long)]
+    /// fast match mode for single rom games,
+    /// may show incorrect names if multiple identical hashes
+    #[clap(short, long, verbatim_doc_comment)]
     fast: bool,
 
     /// rename mismatched files to reference filename if unambiguous
@@ -188,7 +190,7 @@ fn check_file<'a>(
     rename: bool,
 ) -> Result<Vec<Node<'a, 'a>>> {
     let file_name = file_path.file_name().context("file path should always have a file name")?;
-    debug!("hash for '{file_name}' = {hash}");
+    debug!("hash for '{file_path}' ('{file_name}') = {hash}");
     let mut found_nodes = find_rom_nodes_by_hash(df_xml, hash_name_for_method(method), hash, fast);
     debug!("found nodes by hash {:?}", found_nodes);
     if found_nodes.is_empty() {
@@ -218,10 +220,10 @@ fn check_file<'a>(
         if found_nodes.iter().any(|node| get_name_from_node(node) == Some(file_name)) {
             trace!("found at least one match for name, the file is ok, remove other nodes");
             found_nodes.retain(|node| get_name_from_node(node) == Some(file_name));
-            println!("[ OK ] {hash} {file_name}");
+            println!("[ OK ] {hash} {file_path}");
         } else {
             trace!("found at least no matches for name, the file is misnamed but could be multiple options");
-            println!("[WARN] {hash} {file_name}  - multiple matches, could be one of:");
+            println!("[WARN] {hash} {file_path}  - multiple matches, could be one of:");
             found_nodes
                 .iter()
                 .map(get_name_from_node)
