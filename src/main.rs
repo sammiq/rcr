@@ -93,13 +93,29 @@ fn main() -> Result<()> {
                         let mut inner_path = Utf8PathBuf::from(&file);
                         inner_path.push(file);
                         check_file(&df_xml, &inner_path, &hash_string, method, args.fast, false)
-                            .map(|found_rom_nodes| {
+                            .and_then(|found_rom_nodes| {
+                                let mut game_nodes = BTreeSet::new();
                                 for rom_node in found_rom_nodes {
                                     rom_node.parent().filter(is_game_node).if_some(|game_node| {
+                                        game_nodes.insert(game_node);
                                         //use a b-tree set for natural sorting
                                         found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
                                     });
                                 }
+
+                                if game_nodes.is_empty() {
+                                    info!("zip file '{file_path}' seems to match no games");
+                                } else if game_nodes.len() > 1 {
+                                    warn!("zip file '{file_path}' seems to match multiple games, could be one of:");
+                                    game_nodes
+                                        .iter()
+                                        .map(get_name_from_node)
+                                        .for_each(|name| warn!("       {}", name.unwrap_or("???")));
+                                } else if args.rename {
+                                    let game_node = game_nodes.iter().next().expect("should never fail as we checked length");
+                                    rename_to_game(file_path, game_node)?;
+                                }
+                                Ok(())
                             })
                             .err()
                             .if_some(|error| warn!("could not process '{inner_path}', skipping; error was '{error}'"));
@@ -134,6 +150,23 @@ fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn rename_to_game(file_path: &Utf8Path, game_node: &Node) -> Result<()> {
+    let game_name = get_name_from_node(game_node).context("game nodes in reference dat file should always have a name")?;
+    let file_name = file_path.file_name().context("file path should always have a file name")?;
+    let new_file_name = match file_path.extension() {
+        Some(ext) => game_name.to_string() + "." + ext,
+        None => game_name.to_string(),
+    };
+    if file_name != new_file_name {
+        debug!("renaming {file_path} to {new_file_name}");
+        match rename_file_if_possible(file_path, &new_file_name) {
+            Ok(new_path) => info!("{new_path} (renamed from {file_path}"),
+            Err(err) => warn!("could not rename '{file_path}' to '{new_file_name}' - {err}")
+        }
+    }
     Ok(())
 }
 
@@ -204,7 +237,7 @@ fn check_file<'a>(
         if node_name == file_name {
             println!("[ OK ] {hash} {file_path}");
         } else if rename {
-            debug!("renaming {file_name} to {node_name}");
+            debug!("renaming {file_path} to {node_name}");
             match rename_file_if_possible(file_path, node_name) {
                 Ok(new_path) => println!("[ OK ] {hash} {new_path} (renamed from {file_path}"),
                 Err(err) => {

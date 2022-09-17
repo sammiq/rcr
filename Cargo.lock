@@ -458,7 +458,7 @@ checksum = "d34f1408f55294453790c48b2f1ebbb1c5b4b7563eb1f418bcfcfdbb06ebb4e7"
 
 [[package]]
 name = "rcr"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base16ct",
