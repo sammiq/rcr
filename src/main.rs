@@ -109,8 +109,8 @@ fn main() -> Result<()> {
                                     warn!("zip file '{file_path}' seems to match multiple games, could be one of:");
                                     game_nodes
                                         .iter()
-                                        .map(get_name_from_node)
-                                        .for_each(|name| warn!("       {}", name.unwrap_or("???")));
+                                        .flat_map(get_name_from_node)
+                                        .for_each(|name| warn!("       {name}"));
                                 } else if args.rename {
                                     let game_node = game_nodes.iter().next().expect("should never fail as we checked length");
                                     rename_to_game(file_path, game_node)?;
@@ -259,8 +259,8 @@ fn check_file<'a>(
             println!("[WARN] {hash} {file_path}  - multiple matches, could be one of:");
             found_nodes
                 .iter()
-                .map(get_name_from_node)
-                .for_each(|name| println!("       {hash} {}", name.unwrap_or("???")));
+                .flat_map(get_name_from_node)
+                .for_each(|name| println!("       {hash} {name}"));
         }
     }
     Ok(found_nodes)
