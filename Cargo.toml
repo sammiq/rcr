@@ -1,6 +1,6 @@
 [package]
 name = "rcr"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "A file checking tool"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -21,4 +21,8 @@ wild = "2.1.0"
 zip = "0.6.2"
 
 [profile.release]
-debug = true
+# debug = true # disable, use for profiling only, bloats result
+strip = "debuginfo" # strip any debug information from binary, but not symbols
+opt-level = "z" # optimize for size, actually faster in this case
+lto = true # link time optimization for smaller faster code across compilation units
+
