@@ -94,26 +94,31 @@ fn main() -> Result<()> {
                         inner_path.push(file);
                         check_file(&df_xml, &inner_path, &hash_string, method, args.fast, false)
                             .and_then(|found_rom_nodes| {
-                                let mut game_nodes = BTreeSet::new();
+                                let mut unique_games = BTreeSet::new();
                                 for rom_node in found_rom_nodes {
                                     rom_node.parent().filter(is_game_node).if_some(|game_node| {
-                                        game_nodes.insert(game_node);
+                                        unique_games.insert(game_node);
                                         //use a b-tree set for natural sorting
                                         found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
                                     });
                                 }
 
-                                if game_nodes.is_empty() {
-                                    info!("zip file '{file_path}' seems to match no games");
-                                } else if game_nodes.len() > 1 {
-                                    warn!("zip file '{file_path}' seems to match multiple games, could be one of:");
-                                    game_nodes
-                                        .iter()
-                                        .flat_map(get_name_from_node)
-                                        .for_each(|name| warn!("       {name}"));
-                                } else if args.rename {
-                                    let game_node = game_nodes.iter().next().expect("should never fail as we checked length");
-                                    rename_to_game(file_path, game_node)?;
+                                match unique_games.len() {
+                                    0 => info!("zip file '{file_path}' seems to match no games"),
+                                    1 => {
+                                        if args.rename {
+                                            let game_node =
+                                                unique_games.iter().next().expect("should never fail as we checked length");
+                                            rename_to_game(file_path, game_node)?;
+                                        }
+                                    }
+                                    _ => {
+                                        warn!("zip file '{file_path}' seems to match multiple games, could be one of:");
+                                        unique_games
+                                            .iter()
+                                            .flat_map(get_name_from_node)
+                                            .for_each(|name| warn!("       {name}"));
+                                    }
                                 }
                                 Ok(())
                             })
@@ -164,7 +169,7 @@ fn rename_to_game(file_path: &Utf8Path, game_node: &Node) -> Result<()> {
         debug!("renaming {file_path} to {new_file_name}");
         match rename_file_if_possible(file_path, &new_file_name) {
             Ok(new_path) => info!("{new_path} (renamed from {file_path}"),
-            Err(err) => warn!("could not rename '{file_path}' to '{new_file_name}' - {err}")
+            Err(err) => warn!("could not rename '{file_path}' to '{new_file_name}' - {err}"),
         }
     }
     Ok(())
@@ -226,41 +231,45 @@ fn check_file<'a>(
     debug!("hash for '{file_path}' ('{file_name}') = {hash}");
     let mut found_nodes = find_rom_nodes_by_hash(df_xml, hash_name_for_method(method), hash, fast);
     debug!("found nodes by hash {:?}", found_nodes);
-    if found_nodes.is_empty() {
-        trace!("found no matches, the file appears to be unknown");
-        println!("[MISS] {hash} {file_path} - unknown, no match");
-    } else if found_nodes.len() == 1 {
-        let node = found_nodes.first().expect("should never fail as we checked length");
-        trace!("found single match, will use this one");
-        let node_name = get_name_from_node(node).context("rom nodes in reference dat file should always have a name")?;
-
-        if node_name == file_name {
-            println!("[ OK ] {hash} {file_path}");
-        } else if rename {
-            debug!("renaming {file_path} to {node_name}");
-            match rename_file_if_possible(file_path, node_name) {
-                Ok(new_path) => println!("[ OK ] {hash} {new_path} (renamed from {file_path}"),
-                Err(err) => {
-                    warn!("could not rename '{file_path}' to '{node_name}' - {err}");
-                    println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
-                }
-            }
-        } else {
-            println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
+    match found_nodes.len() {
+        0 => {
+            trace!("found no matches, the file appears to be unknown");
+            println!("[MISS] {hash} {file_path} - unknown, no match");
         }
-    } else {
-        trace!("found multiple matches for hash, trying to match by name");
-        if found_nodes.iter().any(|node| get_name_from_node(node) == Some(file_name)) {
-            trace!("found at least one match for name, the file is ok, remove other nodes");
-            found_nodes.retain(|node| get_name_from_node(node) == Some(file_name));
-            println!("[ OK ] {hash} {file_path}");
-        } else {
-            trace!("found at least no matches for name, the file is misnamed but could be multiple options");
-            println!("[WARN] {hash} {file_path}  - multiple matches, could be one of:");
-            found_nodes
-                .iter()
-                .flat_map(get_name_from_node)
-                .for_each(|name| println!("       {hash} {name}"));
+        1 => {
+            trace!("found single match, will use this one");
+            let node = found_nodes.first().expect("should never fail as we checked length");
+            let node_name = get_name_from_node(node).context("rom nodes in reference dat file should always have a name")?;
+
+            if node_name == file_name {
+                println!("[ OK ] {hash} {file_path}");
+            } else if rename {
+                debug!("renaming {file_path} to {node_name}");
+                match rename_file_if_possible(file_path, node_name) {
+                    Ok(new_path) => println!("[ OK ] {hash} {new_path} (renamed from {file_path}"),
+                    Err(err) => {
+                        warn!("could not rename '{file_path}' to '{node_name}' - {err}");
+                        println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
+                    }
+                }
+            } else {
+                println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
+            }
+        }
+        _ => {
+            trace!("found multiple matches for hash, trying to match by name");
+            if found_nodes.iter().any(|node| get_name_from_node(node) == Some(file_name)) {
+                trace!("found at least one match for name, the file is ok, remove other nodes");
+                found_nodes.retain(|node| get_name_from_node(node) == Some(file_name));
+                println!("[ OK ] {hash} {file_path}");
+            } else {
+                trace!("found at least no matches for name, the file is misnamed but could be multiple options");
+                println!("[WARN] {hash} {file_path}  - multiple matches, could be one of:");
+                found_nodes
+                    .iter()
+                    .flat_map(get_name_from_node)
+                    .for_each(|name| println!("       {hash} {name}"));
+            }
         }
     }
     Ok(found_nodes)
