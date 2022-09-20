@@ -58,6 +58,7 @@ Usage
 Limitations
 -----------
 
-- Supports only UTF-8 files and paths, as I use the [camino](https://docs.rs/crate/camino/latest) crate.
+- Supports only UTF-8 files and paths, as I use the [camino](https://docs.rs/crate/camino/latest) crate and it matches my use-case.
+- Does not rename misnamed files inside zip files.
 - Does not support compression formats other than zip.
 - Does not read elements other than `<rom>` inside `<game>` from dat file (I  am yet to find a file containing others).

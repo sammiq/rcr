@@ -89,12 +89,13 @@ fn main() -> Result<()> {
         if file_path.extension() == Some("zip") {
             hash_zip_file_contents(file_path, method)
                 .map(|hashed| {
+                    let mut unique_games = BTreeSet::new();
+
                     for (file, hash_string) in hashed {
                         let mut inner_path = Utf8PathBuf::from(&file);
                         inner_path.push(file);
                         check_file(&df_xml, &inner_path, &hash_string, method, args.fast, false)
                             .and_then(|found_rom_nodes| {
-                                let mut unique_games = BTreeSet::new();
                                 for rom_node in found_rom_nodes {
                                     rom_node.parent().filter(is_game_node).if_some(|game_node| {
                                         unique_games.insert(game_node);
@@ -102,32 +103,14 @@ fn main() -> Result<()> {
                                         found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
                                     });
                                 }
-
-                                match unique_games.len() {
-                                    0 => info!("zip file '{file_path}' seems to match no games"),
-                                    1 => {
-                                        if args.rename {
-                                            let game_node =
-                                                unique_games.iter().next().expect("should never fail as we checked length");
-                                            rename_to_game(file_path, game_node)?;
-                                        }
-                                    }
-                                    _ => {
-                                        warn!("zip file '{file_path}' seems to match multiple games, could be one of:");
-                                        unique_games
-                                            .iter()
-                                            .flat_map(get_name_from_node)
-                                            .for_each(|name| warn!("       {name}"));
-                                    }
-                                }
                                 Ok(())
                             })
-                            .err()
-                            .if_some(|error| warn!("could not process '{inner_path}', skipping; error was '{error}'"));
+                            .if_err(|error| warn!("could not process '{inner_path}', skipping; error was '{error}'"));
                     }
+
+                    report_zip_file(&file_path, &unique_games, args.rename)
                 })
-                .err()
-                .if_some(|error| warn!("could not process '{file_path}', error was '{error}'"));
+                .if_err(|error| warn!("could not process '{file_path}', error was '{error}'"));
         } else {
             reader_for_filename(file_path)
                 .and_then(|mut reader| hash_candidate_file_with_method(&mut reader, method))
@@ -140,8 +123,7 @@ fn main() -> Result<()> {
                         });
                     }
                 })
-                .err()
-                .if_some(|error| warn!("could not process '{file_path}', skipping; error was '{error}'"));
+                .if_err(|error| warn!("could not process '{file_path}', skipping; error was '{error}'"));
         }
     }
 
@@ -149,17 +131,36 @@ fn main() -> Result<()> {
     if !found_games.is_empty() {
         println!("--SETS --");
         for (game, found_roms) in found_games {
-            check_game(method, &game, &found_roms)
-                .err()
-                .if_some(|error| warn!("could not process game, error was '{error}'"));
+            check_game(method, &game, &found_roms).if_err(|error| warn!("could not process game, error was '{error}'"));
         }
     }
 
     Ok(())
 }
 
-fn rename_to_game(file_path: &Utf8Path, game_node: &Node) -> Result<()> {
-    let game_name = get_name_from_node(game_node).context("game nodes in reference dat file should always have a name")?;
+fn report_zip_file(file_path: &Utf8Path, unique_games: &BTreeSet<Node>, rename: bool) -> Result<()> {
+    match unique_games.len() {
+        0 => info!("zip file '{file_path}' seems to match no games"),
+        1 => {
+            let game_node = unique_games.iter().next().expect("should never fail as we checked length");
+            let game_name = get_name_from_node(game_node).context("game nodes in reference dat file should always have a name")?;
+            info!("zip file '{file_path}' matches {game_name}");
+            if rename {
+                rename_to_game(file_path, game_name)?;
+            }
+        }
+        _ => {
+            warn!("zip file '{file_path}' seems to match multiple games, could be one of:");
+            unique_games
+                .iter()
+                .flat_map(get_name_from_node)
+                .for_each(|name| warn!("       {name}"));
+        }
+    }
+    Ok(())
+}
+
+fn rename_to_game(file_path: &Utf8Path, game_name: &str) -> Result<()> {
     let file_name = file_path.file_name().context("file path should always have a file name")?;
     let new_file_name = match file_path.extension() {
         Some(ext) => game_name.to_string() + "." + ext,
@@ -212,8 +213,7 @@ fn hash_zip_file_contents(file: &Utf8Path, method: MatchMethod) -> Result<BTreeM
                     debug!("hash for {} in zip {} is {}", inner_file.name(), file, hash);
                     found_files.insert(inner_file.name().to_string(), hash);
                 })
-                .err()
-                .if_some(|error| warn!("could not process '{}' in zip file '{file}', error was '{error}'", inner_file.name()));
+                .if_err(|error| warn!("could not process '{}' in zip file '{file}', error was '{error}'", inner_file.name()));
         }
     }
     Ok(found_files)
