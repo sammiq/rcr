@@ -18,25 +18,25 @@ use std::fs::File;
 #[clap(version, about, long_about = None)]
 struct Cli {
     /// verbose mode, add more of these for more information
-    #[clap(short, long, action = clap::ArgAction::Count)]
+    #[clap(short, long, action = clap::ArgAction::Count, env = "RCR_VERBOSE")]
     verbose: u8,
 
     /// method to use for matching reference entries
     /// (note: Sha256 is not well supported in dat files from many sources)
-    #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment)]
+    #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment, env = "RCR_METHOD")]
     method: MatchMethod,
 
     /// fast match mode for single rom games,
     /// may show incorrect names if multiple identical hashes
-    #[clap(short, long, verbatim_doc_comment)]
+    #[clap(short, long, verbatim_doc_comment, env = "RCR_FAST")]
     fast: bool,
 
     /// rename mismatched files to reference filename if unambiguous
-    #[clap(short, long)]
+    #[clap(short, long, env = "RCR_RENAME")]
     rename: bool,
 
     /// name of the dat file to use as reference
-    #[clap(value_parser, value_hint = ValueHint::FilePath)]
+    #[clap(short, long, value_parser, value_hint = ValueHint::FilePath, env = "RCR_DATFILE")]
     dat_file: Utf8PathBuf,
 
     /// list of files to check against reference dat file
@@ -55,6 +55,14 @@ fn main() -> Result<()> {
     simple_logger::SimpleLogger::new()
         .init()
         .expect("should be able to initialize the logger");
+
+    //load .env file from current directory only
+    if let Ok(mut path) = std::env::current_dir() {
+        path.push(".env");
+        if path.is_file() {
+            dotenvy::from_path(path).context("Unable to read .env file (possibly malformed input)")?;
+        }
+    }
 
     //wild takes care of globbing on windows instead of manually doing it ourselves
     let args = Cli::parse_from(wild::args_os());
@@ -295,10 +303,10 @@ fn check_game(method: MatchMethod, game: &Node, found_roms: &BTreeSet<Node>) -> 
 fn set_logging_level(verbose: u8) {
     //set the logger level depending on verbose flags (they stack)
     let max_level = match verbose {
+        0 => log::LevelFilter::Warn,
         1 => log::LevelFilter::Info,
         2 => log::LevelFilter::Debug,
-        3..=u8::MAX => log::LevelFilter::Trace,
-        _ => log::LevelFilter::Warn,
+        _ => log::LevelFilter::Trace,
     };
     log::set_max_level(max_level);
     info!("Log Level set to {}", max_level);
