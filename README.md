@@ -4,7 +4,7 @@ rcr: a simple rom auditing tool in Rust
 This tool uses logiqx xml format dat files, as provided by your friendly preservation site, for verifying your own dumps
 against known good versions of the same software.
 
-It supports stand-alone files and sets in zip files.
+It supports stand-alone files and sets in zip files and loading parameters from an `.env` file in the current directory.
 
 History
 -------
@@ -37,21 +37,21 @@ IMPORTANT: Performance will be *terrible* without compiling for release, the SHA
 
 Usage
 -----
-    rcr [OPTIONS] <DAT_FILE> <FILES>...
+    rcr [OPTIONS] --dat-file <DAT_FILE> <FILES>...
 
     ARGS:
-        <DAT_FILE>    name of the dat file to use as reference
         <FILES>...    list of files to check against reference dat file
     
     OPTIONS:
+        -d, --dat-file <DAT_FILE>    name of the dat file to use as reference [env: RCR_DATFILE]
         -f, --fast               fast match mode for single rom games,
-                                 may show incorrect names if multiple identical hashes
+                                 may show incorrect names if multiple identical hashes [env: RCR_FAST]
         -h, --help               Print help information
         -m, --method <METHOD>    method to use for matching reference entries
                                  (note: Sha256 is not well supported in dat files from many sources)
-                                 [default: sha1] [possible values: sha256, sha1, md5]
-        -r, --rename             rename mismatched files to reference filename if unambiguous
-        -v, --verbose            verbose mode, add more of these for more information
+                                 [default: sha1] [possible values: sha256, sha1, md5] [env: RCR_METHOD]
+        -r, --rename             rename mismatched files to reference filename if unambiguous [env: RCR_RENAME]
+        -v, --verbose            verbose mode, add more of these for more information [env: RCR_VERBOSE]
         -V, --version            Print version information
 
 

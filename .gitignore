@@ -18,4 +18,5 @@ target/
 flamegraph.svg
 perf.data*
 perf.hist*
+.env
 
