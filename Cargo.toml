@@ -10,11 +10,11 @@ description = "A file checking tool"
 anyhow = "1.0.65"
 base16ct = { version = "0.1.1", features = ["alloc"] }
 camino = "1.1.1"
-clap = { version = "3.2.22", features = ["derive", "env"] }
+clap = { version = "4.0.2", features = ["derive", "env"] }
 digest = "0.10.5"
 dotenvy = "0.15.5"
 log = "0.4.17"
-md-5 = "0.10.4"
+md-5 = "0.10.5"
 roxmltree = "0.15.0"
 sha1 = "0.10.5"
 sha2 = "0.10.6"
