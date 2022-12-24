@@ -10,7 +10,7 @@ use std::io::{copy, BufReader, Read, Write};
 pub fn rename_file_if_possible(in_file: &Utf8Path, file_name: &str) -> Result<Utf8PathBuf> {
     let mut out_file = Utf8PathBuf::from(in_file);
     out_file.set_file_name(file_name);
-    std::fs::rename(&in_file, &out_file)?;
+    std::fs::rename(in_file, &out_file)?;
     Ok(out_file)
 }
 
