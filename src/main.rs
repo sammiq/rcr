@@ -103,7 +103,7 @@ fn main() -> Result<()> {
                         let mut inner_path = Utf8PathBuf::from(&file);
                         inner_path.push(file);
                         check_file(&df_xml, &inner_path, &hash_string, method, args.fast, false)
-                            .and_then(|found_rom_nodes| {
+                            .map(|found_rom_nodes| {
                                 for rom_node in found_rom_nodes {
                                     rom_node.parent().filter(is_game_node).if_some(|game_node| {
                                         unique_games.insert(game_node);
@@ -111,12 +111,12 @@ fn main() -> Result<()> {
                                         found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
                                     });
                                 }
-                                Ok(())
+                                ()
                             })
                             .if_err(|error| warn!("could not process '{inner_path}', skipping; error was '{error}'"));
                     }
 
-                    report_zip_file(&file_path, &unique_games, args.rename)
+                    report_zip_file(file_path, &unique_games, args.rename)
                 })
                 .if_err(|error| warn!("could not process '{file_path}', error was '{error}'"));
         } else {
