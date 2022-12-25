@@ -22,6 +22,10 @@ struct Cli {
     #[clap(short, long, value_parser, value_hint = ValueHint::FilePath, env = "RCR_DATFILE")]
     dat_file: Utf8PathBuf,
 
+    /// exclude file suffixes when scanning, overrides any files on command line
+    #[clap(short, long, action = clap::ArgAction::Append, env = "RCR_EXCLUDE")]
+    exclude: Vec<String>,
+
     /// fast match mode for single rom games,
     /// may show incorrect names if multiple identical hashes
     #[clap(short, long, verbatim_doc_comment, env = "RCR_FAST")]
@@ -112,6 +116,9 @@ fn main() -> Result<()> {
 }
 
 fn process_files<'x>(args: &Cli, df_xml: &'x Document, method: MatchMethod) -> BTreeMap<Node<'x, 'x>, BTreeSet<Node<'x, 'x>>> {
+    let mut exclusions = BTreeSet::new();
+    exclusions.extend(args.exclude.iter().cloned());
+
     println!("--FILES--");
     let found_games = args
         .files
@@ -119,6 +126,9 @@ fn process_files<'x>(args: &Cli, df_xml: &'x Document, method: MatchMethod) -> B
         .map(|file_path| {
             if !file_path.is_file() {
                 warn!("{file_path} is not a regular file, skipping it");
+                EMPTY_TREE
+            } else if file_path.extension().map(|ext| exclusions.contains(ext)).unwrap_or(false) {
+                info!("{file_path} is has an excluded extension, skipping it");
                 EMPTY_TREE
             } else {
                 if file_path.extension() == Some("zip") {
