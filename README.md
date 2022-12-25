@@ -27,7 +27,7 @@ Wildcards are supported in Windows by the use of the [wild](https://docs.rs/crat
 Building
 --------
 
-You need a working [Rust](https://www.rust-lang.org) installation (I use Rust 1.63 on Ubuntu Linux 22.04).
+You need a working [Rust](https://www.rust-lang.org) installation (I use Rust 1.66 on Ubuntu Linux 22.04).
 
 Build the tool with:
 
@@ -43,16 +43,19 @@ Usage
         <FILES>...    list of files to check against reference dat file
     
     OPTIONS:
-        -d, --dat-file <DAT_FILE>    name of the dat file to use as reference [env: RCR_DATFILE]
-        -f, --fast               fast match mode for single rom games,
-                                 may show incorrect names if multiple identical hashes [env: RCR_FAST]
-        -h, --help               Print help information
-        -m, --method <METHOD>    method to use for matching reference entries
-                                 (note: Sha256 is not well supported in dat files from many sources)
-                                 [default: sha1] [possible values: sha256, sha1, md5] [env: RCR_METHOD]
-        -r, --rename             rename mismatched files to reference filename if unambiguous [env: RCR_RENAME]
-        -v, --verbose            verbose mode, add more of these for more information [env: RCR_VERBOSE]
-        -V, --version            Print version information
+        -d, --dat-file <DAT_FILE>  name of the dat file to use as reference [env: RCR_DATFILE=]
+        -f, --fast                 fast match mode for single rom games,
+                                   may show incorrect names if multiple identical hashes [env: RCR_FAST=]
+        -m, --method <METHOD>      method to use for matching reference entries
+                                   (note: Sha256 is not well supported in dat files from many sources)
+                                   [env: RCR_METHOD=] [default: sha1] [possible values: sha256, sha1, md5]
+        -r, --rename               rename mismatched files to reference filename if unambiguous [env: RCR_RENAME=]
+        -v, --verbose...           verbose mode, add more of these for more information [env: RCR_VERBOSE=]
+        -w, --workers <WORKERS>    number of threads to use for processing, may increase performance
+                                   (note: depends on storage bandwidth, more may be slower than fewer)
+                                   [env: RCR_WORKERS=] [default: 1]
+        -h, --help                 Print help information
+        -V, --version              Print version information
 
 
 Limitations
