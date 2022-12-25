@@ -10,6 +10,7 @@ use anyhow::{ensure, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, ValueEnum, ValueHint};
 use log::{debug, info, trace, warn};
+use rayon::prelude::*;
 use roxmltree::{Document, Node};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -17,27 +18,32 @@ use std::fs::File;
 #[derive(Debug, Parser)]
 #[clap(version, about, long_about = None)]
 struct Cli {
-    /// verbose mode, add more of these for more information
-    #[clap(short, long, action = clap::ArgAction::Count, env = "RCR_VERBOSE")]
-    verbose: u8,
-
-    /// method to use for matching reference entries
-    /// (note: Sha256 is not well supported in dat files from many sources)
-    #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment, env = "RCR_METHOD")]
-    method: MatchMethod,
+    /// name of the dat file to use as reference
+    #[clap(short, long, value_parser, value_hint = ValueHint::FilePath, env = "RCR_DATFILE")]
+    dat_file: Utf8PathBuf,
 
     /// fast match mode for single rom games,
     /// may show incorrect names if multiple identical hashes
     #[clap(short, long, verbatim_doc_comment, env = "RCR_FAST")]
     fast: bool,
 
+    /// method to use for matching reference entries
+    /// (note: Sha256 is not well supported in dat files from many sources)
+    #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment, env = "RCR_METHOD")]
+    method: MatchMethod,
+
     /// rename mismatched files to reference filename if unambiguous
     #[clap(short, long, env = "RCR_RENAME")]
     rename: bool,
 
-    /// name of the dat file to use as reference
-    #[clap(short, long, value_parser, value_hint = ValueHint::FilePath, env = "RCR_DATFILE")]
-    dat_file: Utf8PathBuf,
+    /// verbose mode, add more of these for more information
+    #[clap(short, long, action = clap::ArgAction::Count, env = "RCR_VERBOSE")]
+    verbose: u8,
+
+    /// number of threads to use for processing, may increase performance
+    /// (note: depends on storage bandwidth, more may be slower than fewer)
+    #[clap(short, long, default_value_t = 1, verbatim_doc_comment, env = "RCR_WORKERS")]
+    workers: u8,
 
     /// list of files to check against reference dat file
     #[clap(required = true, value_parser, value_hint = ValueHint::FilePath)]
@@ -50,6 +56,8 @@ enum MatchMethod {
     Sha1,
     Md5,
 }
+
+const EMPTY_TREE: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
 
 fn main() -> Result<()> {
     simple_logger::SimpleLogger::new()
@@ -69,6 +77,12 @@ fn main() -> Result<()> {
     set_logging_level(args.verbose);
     debug!("raw args: {:?}", args);
 
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(args.workers as usize)
+        .build_global()
+        .expect("should be able to initialize the thread pool");
+    info!("using {} threads for processing", args.workers);
+
     trace!("reading dat file {}", args.dat_file);
     //read in the xml to buffer, roxmltree is a bit fiddly with ownership
     let df_buffer = std::fs::read_to_string(&args.dat_file).context("Unable to read reference dat file")?;
@@ -84,56 +98,7 @@ fn main() -> Result<()> {
         );
     }
 
-    //use a b-tree map for natural sorting
-    let mut found_games = BTreeMap::new();
-
-    println!("--FILES--");
-    for file_path in &args.files {
-        if !file_path.is_file() {
-            warn!("{file_path} is not a regular file, skipping it");
-            continue;
-        }
-
-        if file_path.extension() == Some("zip") {
-            hash_zip_file_contents(file_path, method)
-                .map(|hashed| {
-                    let mut unique_games = BTreeSet::new();
-
-                    for (file, hash_string) in hashed {
-                        let mut inner_path = Utf8PathBuf::from(&file);
-                        inner_path.push(file);
-                        check_file(&df_xml, &inner_path, &hash_string, method, args.fast, false)
-                            .map(|found_rom_nodes| {
-                                for rom_node in found_rom_nodes {
-                                    rom_node.parent().filter(is_game_node).if_some(|game_node| {
-                                        unique_games.insert(game_node);
-                                        //use a b-tree set for natural sorting
-                                        found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
-                                    });
-                                }
-                                ()
-                            })
-                            .if_err(|error| warn!("could not process '{inner_path}', skipping; error was '{error}'"));
-                    }
-
-                    report_zip_file(file_path, &unique_games, args.rename)
-                })
-                .if_err(|error| warn!("could not process '{file_path}', error was '{error}'"));
-        } else {
-            reader_for_filename(file_path)
-                .and_then(|mut reader| hash_candidate_file_with_method(&mut reader, method))
-                .and_then(|hash_string| check_file(&df_xml, file_path, &hash_string, method, args.fast, args.rename))
-                .map(|found_rom_nodes| {
-                    for rom_node in found_rom_nodes {
-                        rom_node.parent().filter(is_game_node).if_some(|game_node| {
-                            //use a b-tree set for natural sorting
-                            found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
-                        });
-                    }
-                })
-                .if_err(|error| warn!("could not process '{file_path}', skipping; error was '{error}'"));
-        }
-    }
+    let found_games = process_files(&args, &df_xml, method);
 
     //process sets
     if !found_games.is_empty() {
@@ -144,6 +109,98 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn process_files<'x>(args: &Cli, df_xml: &'x Document, method: MatchMethod) -> BTreeMap<Node<'x, 'x>, BTreeSet<Node<'x, 'x>>> {
+    println!("--FILES--");
+    let found_games = args
+        .files
+        .par_iter()
+        .map(|file_path| {
+            if !file_path.is_file() {
+                warn!("{file_path} is not a regular file, skipping it");
+                EMPTY_TREE
+            } else {
+                if file_path.extension() == Some("zip") {
+                    process_zip_file(&args, &df_xml, file_path, method)
+                } else {
+                    process_rom_file(&args, &df_xml, file_path, method)
+                }
+            }
+        })
+        .reduce(
+            || BTreeMap::new(),
+            |mut acc, e| {
+                for (k, v) in e {
+                    acc.entry(k).or_insert_with(BTreeSet::new).extend(v.iter());
+                }
+                acc
+            },
+        );
+
+    found_games
+}
+
+fn process_rom_file<'x>(
+    args: &Cli,
+    df_xml: &'x Document,
+    file_path: &Utf8PathBuf,
+    method: MatchMethod,
+) -> BTreeMap<Node<'x, 'x>, BTreeSet<Node<'x, 'x>>> {
+    //use a b-tree map for natural sorting
+    let mut found_games = BTreeMap::new();
+
+    reader_for_filename(file_path)
+        .and_then(|mut reader| hash_candidate_file_with_method(&mut reader, method))
+        .and_then(|hash_string| check_file(&df_xml, file_path, &hash_string, method, args.fast, args.rename))
+        .map(|found_rom_nodes| {
+            for rom_node in found_rom_nodes {
+                rom_node.parent().filter(is_game_node).if_some(|game_node| {
+                    //use a b-tree set for natural sorting
+                    found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
+                });
+            }
+        })
+        .if_err(|error| warn!("could not process '{file_path}', skipping; error was '{error}'"));
+
+    found_games
+}
+
+fn process_zip_file<'x>(
+    args: &Cli,
+    df_xml: &'x Document,
+    file_path: &Utf8PathBuf,
+    method: MatchMethod,
+) -> BTreeMap<Node<'x, 'x>, BTreeSet<Node<'x, 'x>>> {
+    //use a b-tree map for natural sorting
+    let mut found_games = BTreeMap::new();
+
+    hash_zip_file_contents(file_path, method)
+        .map(|hashed| {
+            let mut unique_games = BTreeSet::new();
+
+            for (file, hash_string) in hashed {
+                let mut inner_path = Utf8PathBuf::from(&file);
+                inner_path.push(file);
+                check_file(&df_xml, &inner_path, &hash_string, method, args.fast, false)
+                    .map(|found_rom_nodes| {
+                        for rom_node in found_rom_nodes {
+                            rom_node.parent().filter(is_game_node).if_some(|game_node| {
+                                unique_games.insert(game_node);
+                                //use a b-tree set for natural sorting
+                                found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
+                            });
+                        }
+                        ()
+                    })
+                    .if_err(|error| warn!("could not process '{inner_path}', skipping; error was '{error}'"));
+            }
+
+            report_zip_file(file_path, &unique_games, args.rename)
+        })
+        .if_err(|error| warn!("could not process '{file_path}', error was '{error}'"));
+
+    found_games
 }
 
 fn report_zip_file(file_path: &Utf8Path, unique_games: &BTreeSet<Node>, rename: bool) -> Result<()> {
