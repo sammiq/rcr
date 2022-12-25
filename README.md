@@ -44,6 +44,7 @@ Usage
     
     OPTIONS:
         -d, --dat-file <DAT_FILE>  name of the dat file to use as reference [env: RCR_DATFILE=]
+        -e, --exclude <EXCLUDE>    exclude file suffixes when scanning, overrides any files on command line [env: RCR_EXCLUDE=]
         -f, --fast                 fast match mode for single rom games,
                                    may show incorrect names if multiple identical hashes [env: RCR_FAST=]
         -m, --method <METHOD>      method to use for matching reference entries
