@@ -22,8 +22,9 @@ struct Cli {
     #[clap(short, long, value_parser, value_hint = ValueHint::FilePath, env = "RCR_DATFILE")]
     dat_file: Utf8PathBuf,
 
-    /// exclude file suffixes when scanning, overrides any files on command line
-    #[clap(short, long, action = clap::ArgAction::Append, env = "RCR_EXCLUDE")]
+    /// comma seperated list of suffixes to exclude when scanning,
+    /// overrides any files on command line
+    #[clap(short, long, value_delimiter = ',', verbatim_doc_comment, env = "RCR_EXCLUDE")]
     exclude: Vec<String>,
 
     /// fast match mode for single rom games,
@@ -130,16 +131,14 @@ fn process_files<'x>(args: &Cli, df_xml: &'x Document, method: MatchMethod) -> B
             } else if file_path.extension().map(|ext| exclusions.contains(ext)).unwrap_or(false) {
                 info!("{file_path} is has an excluded extension, skipping it");
                 EMPTY_TREE
+            } else if file_path.extension() == Some("zip") {
+                process_zip_file(args, df_xml, file_path, method)
             } else {
-                if file_path.extension() == Some("zip") {
-                    process_zip_file(&args, &df_xml, file_path, method)
-                } else {
-                    process_rom_file(&args, &df_xml, file_path, method)
-                }
+                process_rom_file(args, df_xml, file_path, method)
             }
         })
         .reduce(
-            || BTreeMap::new(),
+            BTreeMap::new,
             |mut acc, e| {
                 for (k, v) in e {
                     acc.entry(k).or_insert_with(BTreeSet::new).extend(v.iter());
@@ -162,7 +161,7 @@ fn process_rom_file<'x>(
 
     reader_for_filename(file_path)
         .and_then(|mut reader| hash_candidate_file_with_method(&mut reader, method))
-        .and_then(|hash_string| check_file(&df_xml, file_path, &hash_string, method, args.fast, args.rename))
+        .and_then(|hash_string| check_file(df_xml, file_path, &hash_string, method, args.fast, args.rename))
         .map(|found_rom_nodes| {
             for rom_node in found_rom_nodes {
                 rom_node.parent().filter(is_game_node).if_some(|game_node| {
@@ -192,7 +191,7 @@ fn process_zip_file<'x>(
             for (file, hash_string) in hashed {
                 let mut inner_path = Utf8PathBuf::from(&file);
                 inner_path.push(file);
-                check_file(&df_xml, &inner_path, &hash_string, method, args.fast, false)
+                check_file(df_xml, &inner_path, &hash_string, method, args.fast, false)
                     .map(|found_rom_nodes| {
                         for rom_node in found_rom_nodes {
                             rom_node.parent().filter(is_game_node).if_some(|game_node| {
@@ -201,7 +200,6 @@ fn process_zip_file<'x>(
                                 found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
                             });
                         }
-                        ()
                     })
                     .if_err(|error| warn!("could not process '{inner_path}', skipping; error was '{error}'"));
             }
