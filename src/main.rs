@@ -137,15 +137,12 @@ fn process_files<'x>(args: &Cli, df_xml: &'x Document, method: MatchMethod) -> B
                 process_rom_file(args, df_xml, file_path, method)
             }
         })
-        .reduce(
-            BTreeMap::new,
-            |mut acc, e| {
-                for (k, v) in e {
-                    acc.entry(k).or_insert_with(BTreeSet::new).extend(v.iter());
-                }
-                acc
-            },
-        );
+        .reduce(BTreeMap::new, |mut acc, e| {
+            for (k, v) in e {
+                acc.entry(k).or_insert_with(BTreeSet::new).extend(v.iter());
+            }
+            acc
+        });
 
     found_games
 }
