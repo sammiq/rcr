@@ -1,45 +1,35 @@
+mod check;
 mod dat_ops;
+mod dat_to_db;
+mod db;
 mod extensions;
 mod file_ops;
+mod hash;
 
+use crate::check::*;
 use crate::dat_ops::*;
-use crate::extensions::*;
+use crate::dat_to_db::*;
+use crate::db::*;
 use crate::file_ops::*;
+use crate::hash::*;
 
-use anyhow::{ensure, Context, Result};
+use std::collections::{BTreeSet, VecDeque};
+use std::env;
+use std::fmt::format;
+
+use crate::extensions::ResultExt;
+use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use clap::{Parser, ValueEnum, ValueHint};
-use log::{debug, info, trace, warn};
-use rayon::prelude::*;
-use roxmltree::{Document, Node};
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
+use clap::{Args, Parser, Subcommand, ValueHint};
+use log::{debug, info, warn};
+use rusqlite::Connection;
 
 #[derive(Debug, Parser)]
 #[clap(version, about, long_about = None)]
 struct Cli {
-    /// name of the dat file to use as reference
-    #[clap(short, long, value_parser, value_hint = ValueHint::FilePath, env = "RCR_DATFILE")]
-    dat_file: Utf8PathBuf,
-
-    /// comma seperated list of suffixes to exclude when scanning,
-    /// overrides any files on command line
-    #[clap(short, long, value_delimiter = ',', verbatim_doc_comment, env = "RCR_EXCLUDE")]
-    exclude: Vec<String>,
-
-    /// fast match mode for single rom games,
-    /// may show incorrect names if multiple identical hashes
-    #[clap(short, long, verbatim_doc_comment, env = "RCR_FAST")]
-    fast: bool,
-
-    /// method to use for matching reference entries
-    /// (note: Sha256 is not well supported in dat files from many sources)
-    #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment, env = "RCR_METHOD")]
-    method: MatchMethod,
-
-    /// rename mismatched files to reference filename if unambiguous
-    #[clap(short, long, env = "RCR_RENAME")]
-    rename: bool,
+    /// name for the database
+    #[clap(short, long, default_value = "rcr.sqlite3", env = "RCR_DB_NAME")]
+    db_name: String,
 
     /// verbose mode, add more of these for more information
     #[clap(short, long, action = clap::ArgAction::Count, env = "RCR_VERBOSE")]
@@ -50,19 +40,83 @@ struct Cli {
     #[clap(short, long, default_value_t = 1, verbatim_doc_comment, env = "RCR_WORKERS")]
     workers: u8,
 
-    /// list of files to check against reference dat file
-    #[clap(required = true, value_parser, value_hint = ValueHint::FilePath)]
-    files: Vec<Utf8PathBuf>,
+    /// command to execute
+    #[clap(subcommand)]
+    command: CliCommands,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
-enum MatchMethod {
-    Sha256,
-    Sha1,
-    Md5,
+#[derive(Clone, Debug, Subcommand)]
+enum CliCommands {
+    /// Scan all files in directory, clear any existing database
+    Build(BuildArgs),
+    /// Check given files in directory against a dat-file, without adding them to a database
+    Check(CheckArgs),
+    /// Scan for changes in directory, adding new files and removing old files from the database
+    Scan(ScanArgs),
+    /// List files in the database
+    List,
+    /// Upgrade the dat-file reference, re-matching files against the dat-file
+    Upgrade(UpgradeArgs),
+    /// Verify the files in the directory match the database
+    Verify,
 }
 
-const EMPTY_TREE: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
+#[derive(Clone, Debug, Args)]
+struct BuildArgs {
+    /// Name of the dat-file to use as reference
+    #[clap(short, long, value_parser, value_hint = ValueHint::FilePath)]
+    dat_file: Utf8PathBuf,
+
+    /// Comma seperated list of suffixes to exclude when scanning
+    #[clap(short, long, value_delimiter = ',', env = "RCR_EXCLUDE")]
+    exclude: Vec<String>,
+
+    /// Comma seperated list of suffixes to include when scanning, defaults to all files
+    #[clap(short, long, value_delimiter = ',', env = "RCR_INCLUDE")]
+    include: Vec<String>,
+
+    /// Method to use for matching dat-file entries, ignored if no hashes of this type
+    #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1, env = "RCR_METHOD")]
+    method: MatchMethod,
+
+    /// Recursively process sub-directories
+    #[clap(short = 'R', long, env = "RCR_RECURSIVE")]
+    recursive: bool,
+
+    /// Rename mismatched files to dat-file entry, if unambiguous
+    #[clap(short, long, env = "RCR_RENAME")]
+    rename: bool,
+}
+
+#[derive(Clone, Debug, Args)]
+struct ScanArgs {
+    /// comma seperated list of suffixes to exclude when scanning
+    #[clap(short, long, value_delimiter = ',', verbatim_doc_comment, env = "RCR_EXCLUDE")]
+    exclude: Vec<String>,
+
+    /// comma seperated list of suffixes to include when scanning
+    #[clap(short, long, value_delimiter = ',', verbatim_doc_comment, env = "RCR_INCLUDE")]
+    include: Vec<String>,
+
+    /// Re-scan all files in directory, clear entries and recalculate hashes for all files
+    #[clap(short, long, env = "RCR_FULL_SCAN")]
+    full: bool,
+
+    /// rename mismatched files to reference filename if unambiguous
+    #[clap(short, long, env = "RCR_RENAME")]
+    rename: bool,
+}
+
+#[derive(Clone, Debug, Args)]
+struct UpgradeArgs {
+    /// name of the dat file to use as reference, replacing previous reference
+    #[clap(short, long, value_parser, value_hint = ValueHint::FilePath)]
+    dat_file: Utf8PathBuf,
+
+    /// rename mismatched files to reference filename if unambiguous
+    #[clap(short, long, env = "RCR_RENAME")]
+    rename: bool,
+}
 
 fn main() -> Result<()> {
     simple_logger::SimpleLogger::new()
@@ -70,7 +124,7 @@ fn main() -> Result<()> {
         .expect("should be able to initialize the logger");
 
     //load .env file from current directory only
-    if let Ok(mut path) = std::env::current_dir() {
+    if let Ok(mut path) = env::current_dir() {
         path.push(".env");
         if path.is_file() {
             dotenvy::from_path(path).context("Unable to read .env file (possibly malformed input)")?;
@@ -88,278 +142,167 @@ fn main() -> Result<()> {
         .expect("should be able to initialize the thread pool");
     info!("using {} threads for processing", args.workers);
 
-    trace!("reading dat file {}", args.dat_file);
-    //read in the xml to buffer, roxmltree is a bit fiddly with ownership
-    let df_buffer = std::fs::read_to_string(&args.dat_file).context("Unable to read reference dat file")?;
-    let df_xml = Document::parse(df_buffer.as_str()).context("Unable to parse reference dat file")?;
-    info!("dat file {} read successfully", args.dat_file);
-
-    //ensure that the dat file will support this usage
-    let method = sanity_check_match_method(&df_xml, args.method)?;
-    if method != args.method {
-        warn!(
-            "matching files using {} after checking, as reference dat file missing those data",
-            hash_name_for_method(method)
-        );
+    match args.command {
+        CliCommands::Build(ref build_args) => run_build(&args.db_name, build_args),
+        CliCommands::Check(ref check_args) => run_check(check_args),
+        // error if no database
+        //scan all new files in directory and add to db
+        CliCommands::Scan(_) => Ok(()),
+        // error if no database
+        // list out matching and non-matching files
+        CliCommands::List => Ok(()),
+        // error if no database
+        // clear existing dat database
+        // update new dat database
+        //reprocess files and rename if required
+        CliCommands::Upgrade(_) => Ok(()),
+        // error if no database
+        // loop thru files and verify unchanged from db
+        CliCommands::Verify => Ok(()),
     }
-
-    let found_games = process_files(&args, &df_xml, method);
-
-    //process sets
-    if !found_games.is_empty() {
-        println!("--SETS --");
-        for (game, found_roms) in found_games {
-            check_game(method, &game, &found_roms).if_err(|error| warn!("could not process game, error was '{error}'"));
-        }
-    }
-
-    Ok(())
 }
 
-fn process_files<'x>(args: &Cli, df_xml: &'x Document, method: MatchMethod) -> BTreeMap<Node<'x, 'x>, BTreeSet<Node<'x, 'x>>> {
+fn run_build(db_name: &str, build_args: &BuildArgs) -> Result<()> {
+    //we need to read out method as it can change if not found in dat-file
+    let (connection, method) = read_dat_to_db(db_name, &build_args.dat_file, build_args.method)?;
+    //we now can operate from the database and start processing files
     let mut exclusions = BTreeSet::new();
-    exclusions.extend(args.exclude.iter().cloned());
+    exclusions.extend(build_args.exclude.iter().cloned());
 
-    println!("--FILES--");
-    let found_games = args
-        .files
-        .par_iter()
-        .map(|file_path| {
-            if !file_path.is_file() {
-                warn!("{file_path} is not a regular file, skipping it");
-                EMPTY_TREE
-            } else if file_path.extension().map(|ext| exclusions.contains(ext)).unwrap_or(false) {
-                info!("{file_path} is has an excluded extension, skipping it");
-                EMPTY_TREE
-            } else if file_path.extension() == Some("zip") {
-                process_zip_file(args, df_xml, file_path, method)
-            } else {
-                process_rom_file(args, df_xml, file_path, method)
-            }
-        })
-        .reduce(BTreeMap::new, |mut acc, e| {
-            for (k, v) in e {
-                acc.entry(k).or_insert_with(BTreeSet::new).extend(v.iter());
-            }
-            acc
-        });
+    let mut inclusions = BTreeSet::new();
+    inclusions.extend(build_args.include.iter().cloned());
 
-    found_games
-}
+    let mut dir_queue = VecDeque::new();
+    dir_queue.push_back(env::current_dir().context("cannot get current directory")?);
 
-fn process_rom_file<'x>(
-    args: &Cli,
-    df_xml: &'x Document,
-    file_path: &Utf8PathBuf,
-    method: MatchMethod,
-) -> BTreeMap<Node<'x, 'x>, BTreeSet<Node<'x, 'x>>> {
-    //use a b-tree map for natural sorting
-    let mut found_games = BTreeMap::new();
-
-    reader_for_filename(file_path)
-        .and_then(|mut reader| hash_candidate_file_with_method(&mut reader, method))
-        .and_then(|hash_string| check_file(df_xml, file_path, &hash_string, method, args.fast, args.rename))
-        .map(|found_rom_nodes| {
-            for rom_node in found_rom_nodes {
-                rom_node.parent().filter(is_game_node).if_some(|game_node| {
-                    //use a b-tree set for natural sorting
-                    found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
-                });
-            }
-        })
-        .if_err(|error| warn!("could not process '{file_path}', skipping; error was '{error}'"));
-
-    found_games
-}
-
-fn process_zip_file<'x>(
-    args: &Cli,
-    df_xml: &'x Document,
-    file_path: &Utf8PathBuf,
-    method: MatchMethod,
-) -> BTreeMap<Node<'x, 'x>, BTreeSet<Node<'x, 'x>>> {
-    //use a b-tree map for natural sorting
-    let mut found_games = BTreeMap::new();
-
-    hash_zip_file_contents(file_path, method)
-        .map(|hashed| {
-            let mut unique_games = BTreeSet::new();
-
-            for (file, hash_string) in hashed {
-                let mut inner_path = Utf8PathBuf::from(&file);
-                inner_path.push(file);
-                check_file(df_xml, &inner_path, &hash_string, method, args.fast, false)
-                    .map(|found_rom_nodes| {
-                        for rom_node in found_rom_nodes {
-                            rom_node.parent().filter(is_game_node).if_some(|game_node| {
-                                unique_games.insert(game_node);
-                                //use a b-tree set for natural sorting
-                                found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
-                            });
+    while let Some(directory) = dir_queue.pop_front() {
+        Utf8Path::from_path(directory.as_path())
+            .context("cannot process current directory")?
+            .read_dir_utf8()
+            .context("cannot read current directory")?
+            .for_each(|f| match f {
+                Ok(de) => {
+                    let path = de.path();
+                    if path.is_dir() {
+                        if build_args.recursive {
+                            debug!("{path} is a directory, queueing for processing");
+                            dir_queue.push_back(directory.to_path_buf())
+                        } else {
+                            debug!("{path} is a directory, skipping");
                         }
-                    })
-                    .if_err(|error| warn!("could not process '{inner_path}', skipping; error was '{error}'"));
-            }
-
-            report_zip_file(file_path, &unique_games, args.rename)
-        })
-        .if_err(|error| warn!("could not process '{file_path}', error was '{error}'"));
-
-    found_games
-}
-
-fn report_zip_file(file_path: &Utf8Path, unique_games: &BTreeSet<Node>, rename: bool) -> Result<()> {
-    match unique_games.len() {
-        0 => info!("zip file '{file_path}' seems to match no games"),
-        1 => {
-            let game_node = unique_games.iter().next().expect("should never fail as we checked length");
-            let game_name = get_name_from_node(game_node).context("game nodes in reference dat file should always have a name")?;
-            info!("zip file '{file_path}' matches {game_name}");
-            if rename {
-                rename_to_game(file_path, game_name)?;
-            }
-        }
-        _ => {
-            warn!("zip file '{file_path}' seems to match multiple games, could be one of:");
-            unique_games
-                .iter()
-                .flat_map(get_name_from_node)
-                .for_each(|name| warn!("       {name}"));
-        }
-    }
-    Ok(())
-}
-
-fn rename_to_game(file_path: &Utf8Path, game_name: &str) -> Result<()> {
-    let file_name = file_path.file_name().context("file path should always have a file name")?;
-    let new_file_name = match file_path.extension() {
-        Some(ext) => game_name.to_string() + "." + ext,
-        None => game_name.to_string(),
-    };
-    if file_name != new_file_name {
-        debug!("renaming {file_path} to {new_file_name}");
-        match rename_file_if_possible(file_path, &new_file_name) {
-            Ok(new_path) => info!("{new_path} (renamed from {file_path}"),
-            Err(err) => warn!("could not rename '{file_path}' to '{new_file_name}' - {err}"),
-        }
-    }
-    Ok(())
-}
-
-fn sanity_check_match_method(df_xml: &Document, method: MatchMethod) -> Result<MatchMethod> {
-    sanity_check_match_method_inner(df_xml, method, 0)
-}
-
-fn sanity_check_match_method_inner(df_xml: &Document, method: MatchMethod, recursion: u8) -> Result<MatchMethod> {
-    //check whether this file has those methods
-    if df_xml
-        .descendants()
-        .filter(is_rom_node)
-        .any(|n| get_hash_from_rom_node(&n, hash_name_for_method(method)).is_some())
-    {
-        Ok(method)
-    } else {
-        match method {
-            MatchMethod::Sha256 => sanity_check_match_method_inner(df_xml, MatchMethod::Sha1, recursion + 1),
-            MatchMethod::Sha1 => sanity_check_match_method_inner(df_xml, MatchMethod::Md5, recursion + 1),
-            MatchMethod::Md5 => {
-                //if we hit here and recursion > 0 then don't keep going as it means we've already tried Sha1
-                ensure!(recursion == 0, "no valid methods found in reference dat file");
-                sanity_check_match_method_inner(df_xml, MatchMethod::Sha1, recursion + 1)
-            }
-        }
-    }
-}
-
-fn hash_zip_file_contents(file: &Utf8Path, method: MatchMethod) -> Result<BTreeMap<String, String>> {
-    let f = File::open(file).with_context(|| format!("could not open file '{file}'"))?;
-    let mut zip = zip::ZipArchive::new(f).with_context(|| format!("could not open '{file}' as a zip file"))?;
-    let mut found_files = BTreeMap::new();
-    for i in 0..zip.len() {
-        let mut inner_file = zip.by_index(i)?; //fix error
-        if inner_file.is_file() {
-            hash_candidate_file_with_method(&mut inner_file, method)
-                .map(|hash| {
-                    debug!("hash for {} in zip {} is {}", inner_file.name(), file, hash);
-                    found_files.insert(inner_file.name().to_string(), hash);
-                })
-                .if_err(|error| warn!("could not process '{}' in zip file '{file}', error was '{error}'", inner_file.name()));
-        }
-    }
-    Ok(found_files)
-}
-
-fn check_file<'a>(
-    df_xml: &'a Document,
-    file_path: &Utf8Path,
-    hash: &str,
-    method: MatchMethod,
-    fast: bool,
-    rename: bool,
-) -> Result<Vec<Node<'a, 'a>>> {
-    let file_name = file_path.file_name().context("file path should always have a file name")?;
-    debug!("hash for '{file_path}' ('{file_name}') = {hash}");
-    let mut found_nodes = find_rom_nodes_by_hash(df_xml, hash_name_for_method(method), hash, fast);
-    debug!("found nodes by hash {:?}", found_nodes);
-    match found_nodes.len() {
-        0 => {
-            trace!("found no matches, the file appears to be unknown");
-            println!("[MISS] {hash} {file_path} - unknown, no match");
-        }
-        1 => {
-            trace!("found single match, will use this one");
-            let node = found_nodes.first().expect("should never fail as we checked length");
-            let node_name = get_name_from_node(node).context("rom nodes in reference dat file should always have a name")?;
-
-            if node_name == file_name {
-                println!("[ OK ] {hash} {file_path}");
-            } else if rename {
-                debug!("renaming {file_path} to {node_name}");
-                match rename_file_if_possible(file_path, node_name) {
-                    Ok(new_path) => println!("[ OK ] {hash} {new_path} (renamed from {file_path}"),
-                    Err(err) => {
-                        warn!("could not rename '{file_path}' to '{node_name}' - {err}");
-                        println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
+                        return;
                     }
+
+                    process_file(db_name, &connection, method, &exclusions, &inclusions, path)
+                        .if_err(|e| warn!("unable to process {path}, error was {e}"));
                 }
-            } else {
-                println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
-            }
-        }
-        _ => {
-            trace!("found multiple matches for hash, trying to match by name");
-            if found_nodes.iter().any(|node| get_name_from_node(node) == Some(file_name)) {
-                trace!("found at least one match for name, the file is ok, remove other nodes");
-                found_nodes.retain(|node| get_name_from_node(node) == Some(file_name));
-                println!("[ OK ] {hash} {file_path}");
-            } else {
-                trace!("found at least no matches for name, the file is misnamed but could be multiple options");
-                println!("[WARN] {hash} {file_path}  - multiple matches, could be one of:");
-                found_nodes
-                    .iter()
-                    .flat_map(get_name_from_node)
-                    .for_each(|name| println!("       {hash} {name}"));
-            }
-        }
+                Err(err) => warn!("error while enumerating directory. Error was {}", err),
+            });
     }
-    Ok(found_nodes)
+    Ok(())
 }
 
-fn check_game(method: MatchMethod, game: &Node, found_roms: &BTreeSet<Node>) -> Result<()> {
-    let all_roms: BTreeSet<Node> = game.children().filter(is_rom_node).collect();
-    let game_name = get_name_from_node(game).context("game nodes in reference dat file should always have a name")?;
-    if found_roms.len() == all_roms.len() {
-        println!("[ OK ]  {game_name}");
-        Ok(())
-    } else {
-        all_roms.difference(found_roms).try_for_each(|missing| {
-            let missing_name = get_name_from_node(missing).context("rom nodes in reference dat file should always have a name")?;
-            let missing_hash = get_hash_from_rom_node(missing, hash_name_for_method(method))
-                .context("rom nodes in reference dat file should have a hash")?;
-            println!("[WARN]  {game_name} is missing {missing_hash} {missing_name}");
-            Ok(())
-        })
+fn process_file(
+    db_name: &str,
+    connection: &Connection,
+    method: MatchMethod,
+    exclusions: &BTreeSet<String>,
+    inclusions: &BTreeSet<String>,
+    file_path: &Utf8Path,
+) -> Result<()> {
+    if !file_path.is_file() {
+        warn!("{file_path} is not a regular file, skipping");
+        return Ok(());
     }
+
+    let file_name = file_path
+        .file_name()
+        .context("expect a file to have a filename that is accessible")?;
+
+    if file_name.starts_with('.') {
+        debug!("{file_path} is a hidden entry (dotfile or the like), skipping");
+        return Ok(());
+    }
+
+    if file_name == db_name {
+        debug!("{file_path} is the database in use, skipping");
+        return Ok(());
+    }
+
+    if file_path.extension().map(|ext| exclusions.contains(ext)).unwrap_or(false) {
+        info!("{file_path} has an extension that is excluded, skipping");
+        return Ok(());
+    }
+    if !inclusions.is_empty() && file_path.extension().map(|inc| inclusions.contains(inc)).unwrap_or(false) {
+        info!("{file_path} has an extension that is not included, skipping");
+        return Ok(());
+    }
+
+    let hash = reader_for_filename(file_path)
+        .and_then(|mut reader| hash_file_with_method(&mut reader, method))
+        .with_context(|| format!("unable to hash file {file_path}"))?;
+
+    debug!("{} {}", file_name, hash);
+    let hash_matches = find_references_by_hash(connection, &hash).context("unable to access database while searching for hash")?;
+
+    debug!("{} {} {:?}", file_name, hash, hash_matches);
+    match hash_matches.len() {
+        0 => {
+            debug!("{} {} found no entry in database (using hash), checking name", hash, file_name);
+            let name_matches =
+                find_references_by_name(connection, file_name).context("unable to access database while searching for name")?;
+            match name_matches.len() {
+                //no names match
+                0 => println!("[MISS] {} {} - unknown, no match", hash, file_name),
+                _ => {
+                    //we should check the size of the file, vs the size of the expected file, could be an overdump
+                    println!("[BAD ] {} {} - incorrect hash, should be:", hash, file_name);
+                    name_matches.iter().for_each(|name_match| {
+                        println!("       {} {} (part of {})", name_match.file_hash, name_match.file_name, name_match.game_name)
+                    });
+                }
+            };
+            add_file_entry(connection, &hash, file_name, None).context("unable to access database while adding entry")?;
+        }
+        1 => {
+            debug!("{} {} found unambiguous entry in database (using hash)", hash, file_name);
+            let entry = &hash_matches[0];
+            if entry.file_name == file_name {
+                println!("[ OK ] {} {}", hash, file_name);
+            } else {
+                //rename if required or report name issue
+                println!("[WARN] {} {} - incorrect name, should be:", hash, file_name);
+                println!("       {} {} (part of {})", entry.file_hash, entry.file_name, entry.game_name);
+            }
+            add_file_entry(connection, &hash, file_name, Some(entry.id)).context("unable to access database while adding entry")?;
+        }
+        _ => {
+            debug!("{} {} found ambiguous entries in database (using hash), checking name", hash, file_name);
+            let name_matches: Vec<&ReferenceEntry> = hash_matches.iter().filter(|&entry| entry.file_name == file_name).collect();
+            match name_matches.len() {
+                0 => {
+                    println!("[WARN] {} {} - incorrect name, could be one of:", hash, file_name);
+                    hash_matches.iter().for_each(|hash_match| {
+                        println!("       {} {} (part of {})", hash_match.file_hash, hash_match.file_name, hash_match.game_name)
+                    });
+                    //need to add to ambiguous match table
+                }
+                1 => {
+                    println!("[ OK ] {} {}", hash, file_name);
+                    add_file_entry(connection, &hash, file_name, Some(name_matches[0].id))
+                        .context("unable to access database while adding entry")?;
+                }
+                _ => {
+                    println!("[WARN] {} {} - ambiguous name, could be one of:", hash, file_name);
+                    hash_matches.iter().for_each(|hash_match| {
+                        println!("       {} {} (part of {})", hash_match.file_hash, hash_match.file_name, hash_match.game_name)
+                    });
+                    //need to add to ambiguous match table
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn set_logging_level(verbose: u8) {
@@ -372,20 +315,4 @@ fn set_logging_level(verbose: u8) {
     };
     log::set_max_level(max_level);
     info!("Log Level set to {}", max_level);
-}
-
-fn hash_candidate_file_with_method<R: std::io::Read + ?Sized>(reader: &mut R, method: MatchMethod) -> Result<String> {
-    match method {
-        MatchMethod::Sha256 => calc_sha256_for_reader(reader),
-        MatchMethod::Sha1 => calc_sha1_for_reader(reader),
-        MatchMethod::Md5 => calc_md5_for_reader(reader),
-    }
-}
-
-fn hash_name_for_method(method: MatchMethod) -> &'static str {
-    match method {
-        MatchMethod::Sha256 => "sha256",
-        MatchMethod::Sha1 => "sha1",
-        MatchMethod::Md5 => "md5",
-    }
 }
