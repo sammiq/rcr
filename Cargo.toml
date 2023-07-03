@@ -1,27 +1,27 @@
 [package]
 name = "rcr"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "A file checking tool"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 # Changes synced to lockfile via `cargo upgrade` (via cargo-edit)
 [dependencies]
-anyhow = "=1.0.62" # pin this to exact version, the later ones are causing E0554 on release compilers
-base16ct = { version = "0.1.1", features = ["alloc"] }
-camino = "1.1.1"
-clap = { version = "4.0.32", features = ["derive", "env"] }
-digest = "0.10.6"
-dotenvy = "0.15.6"
-log = "0.4.17"
+anyhow = "1.0.71" 
+base16ct = { version = "0.2.0", features = ["alloc"] }
+camino = "1.1.4"
+clap = { version = "4.3.10", features = ["derive", "env"] }
+digest = "0.10.7"
+dotenvy = "0.15.7"
+log = "0.4.19"
 md-5 = "0.10.5"
-rayon = "1.6.1"
-roxmltree = "0.15.1"
+rayon = "1.7.0"
+roxmltree = "0.18.0"
 sha1 = "0.10.5"
-sha2 = "0.10.6"
-simple_logger = { version = "4.0.0", features = ["colors", "stderr"] }
+sha2 = "0.10.7"
+simple_logger = { version = "4.2.0", features = ["colors", "stderr"] }
 wild = "2.1.0"
-zip = "0.6.3"
+zip = "0.6.6"
 
 [profile.release]
 # debug = true # disable, use for profiling only, bloats result
