@@ -7,10 +7,10 @@ description = "A file checking tool"
 
 # Changes synced to lockfile via `cargo upgrade` (via cargo-edit)
 [dependencies]
-anyhow = "1.0.71" 
+anyhow = "1.0.72" 
 base16ct = { version = "0.2.0", features = ["alloc"] }
-camino = "1.1.4"
-clap = { version = "4.3.10", features = ["derive", "env"] }
+camino = "1.1.6"
+clap = { version = "4.3.14", features = ["derive", "env"] }
 digest = "0.10.7"
 dotenvy = "0.15.7"
 log = "0.4.19"
