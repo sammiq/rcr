@@ -141,7 +141,7 @@ fn process_files<'x>(args: &Cli, df_xml: &'x Document, method: MatchMethod) -> B
             BTreeMap::new,
             |mut acc, e| {
                 for (k, v) in e {
-                    acc.entry(k).or_insert_with(BTreeSet::new).extend(v.iter());
+                    acc.entry(k).or_default().extend(v.iter());
                 }
                 acc
             },
