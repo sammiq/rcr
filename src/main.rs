@@ -1,9 +1,7 @@
 mod dat_ops;
-mod extensions;
 mod file_ops;
 
 use crate::dat_ops::*;
-use crate::extensions::*;
 use crate::file_ops::*;
 
 use anyhow::{ensure, Context, Result};
@@ -11,6 +9,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, ValueEnum, ValueHint};
 use log::{debug, info, trace, warn};
 use rayon::prelude::*;
+use roxmltree::ParsingOptions;
 use roxmltree::{Document, Node};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -91,7 +90,10 @@ fn main() -> Result<()> {
     trace!("reading dat file {}", args.dat_file);
     //read in the xml to buffer, roxmltree is a bit fiddly with ownership
     let df_buffer = std::fs::read_to_string(&args.dat_file).context("Unable to read reference dat file")?;
-    let df_xml = Document::parse(df_buffer.as_str()).context("Unable to parse reference dat file")?;
+    let df_xml = Document::parse_with_options(df_buffer.as_str(), ParsingOptions {
+        allow_dtd: true,
+        ..Default::default()
+    }).context("Unable to parse reference dat file")?;
     info!("dat file {} read successfully", args.dat_file);
 
     //ensure that the dat file will support this usage
@@ -109,7 +111,9 @@ fn main() -> Result<()> {
     if !found_games.is_empty() {
         println!("--SETS --");
         for (game, found_roms) in found_games {
-            check_game(method, &game, &found_roms).if_err(|error| warn!("could not process game, error was '{error}'"));
+            if let Err(error) = check_game(method, &game, &found_roms) {
+                warn!("could not process game, error was '{error}'");
+            }
         }
     }
 
@@ -159,18 +163,19 @@ fn process_rom_file<'x>(
     //use a b-tree map for natural sorting
     let mut found_games = BTreeMap::new();
 
-    reader_for_filename(file_path)
+    match reader_for_filename(file_path)
         .and_then(|mut reader| hash_candidate_file_with_method(&mut reader, method))
-        .and_then(|hash_string| check_file(df_xml, file_path, &hash_string, method, args.fast, args.rename))
-        .map(|found_rom_nodes| {
+        .and_then(|hash_string| check_file(df_xml, file_path, &hash_string, method, args.fast, args.rename)) {
+        Ok(found_rom_nodes) => {
             for rom_node in found_rom_nodes {
-                rom_node.parent().filter(is_game_node).if_some(|game_node| {
+                if let Some(game_node) = rom_node.parent().filter(is_game_node) {
                     //use a b-tree set for natural sorting
                     found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
-                });
+                };
             }
-        })
-        .if_err(|error| warn!("could not process '{file_path}', skipping; error was '{error}'"));
+        }
+        Err(error) => warn!("could not process '{file_path}', skipping; error was '{error}'")
+    }
 
     found_games
 }
@@ -184,29 +189,31 @@ fn process_zip_file<'x>(
     //use a b-tree map for natural sorting
     let mut found_games = BTreeMap::new();
 
-    hash_zip_file_contents(file_path, method)
+    if let Err(error) = hash_zip_file_contents(file_path, method)
         .map(|hashed| {
             let mut unique_games = BTreeSet::new();
 
             for (file, hash_string) in hashed {
                 let mut inner_path = Utf8PathBuf::from(&file);
                 inner_path.push(file);
-                check_file(df_xml, &inner_path, &hash_string, method, args.fast, false)
-                    .map(|found_rom_nodes| {
+                match check_file(df_xml, &inner_path, &hash_string, method, args.fast, false) {
+                    Ok(found_rom_nodes) => {
                         for rom_node in found_rom_nodes {
-                            rom_node.parent().filter(is_game_node).if_some(|game_node| {
+                            if let Some(game_node) = rom_node.parent().filter(is_game_node) {
                                 unique_games.insert(game_node);
                                 //use a b-tree set for natural sorting
                                 found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
-                            });
+                            };
                         }
-                    })
-                    .if_err(|error| warn!("could not process '{inner_path}', skipping; error was '{error}'"));
+                    }
+                    Err(error) => warn!("could not process '{inner_path}', skipping; error was '{error}'"),
+                }
             }
 
             report_zip_file(file_path, &unique_games, args.rename)
-        })
-        .if_err(|error| warn!("could not process '{file_path}', error was '{error}'"));
+        }) {
+            warn!("could not process '{file_path}', error was '{error}'")
+        }
 
     found_games
 }
@@ -281,12 +288,13 @@ fn hash_zip_file_contents(file: &Utf8Path, method: MatchMethod) -> Result<BTreeM
     for i in 0..zip.len() {
         let mut inner_file = zip.by_index(i)?; //fix error
         if inner_file.is_file() {
-            hash_candidate_file_with_method(&mut inner_file, method)
-                .map(|hash| {
+            match hash_candidate_file_with_method(&mut inner_file, method) {
+                Ok(hash) => {
                     debug!("hash for {} in zip {} is {}", inner_file.name(), file, hash);
                     found_files.insert(inner_file.name().to_string(), hash);
-                })
-                .if_err(|error| warn!("could not process '{}' in zip file '{file}', error was '{error}'", inner_file.name()));
+                }
+                Err(error) => warn!("could not process '{}' in zip file '{file}', error was '{error}'", inner_file.name()),
+            }
         }
     }
     Ok(found_files)
