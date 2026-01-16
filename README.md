@@ -37,27 +37,38 @@ IMPORTANT: Performance will be *terrible* without compiling for release, the SHA
 
 Usage
 -----
-    rcr [OPTIONS] --dat-file <DAT_FILE> <FILES>...
+    Usage: rcr [OPTIONS] --dat-file <DAT_FILE> <FILES>...
 
-    ARGS:
-        <FILES>...    list of files to check against reference dat file
-    
-    OPTIONS:
-        -d, --dat-file <DAT_FILE>  name of the dat file to use as reference [env: RCR_DATFILE=]
-        -e, --exclude <EXCLUDE>    comma seperated list of suffixes to exclude when scanning,
-                                   overrides any files on command line [env: RCR_EXCLUDE=]
-        -f, --fast                 fast match mode for single rom games,
-                                   may show incorrect names if multiple identical hashes [env: RCR_FAST=]
-        -m, --method <METHOD>      method to use for matching reference entries
-                                   (note: Sha256 is not well supported in dat files from many sources)
-                                   [env: RCR_METHOD=] [default: sha1] [possible values: sha256, sha1, md5]
-        -r, --rename               rename mismatched files to reference filename if unambiguous [env: RCR_RENAME=]
-        -v, --verbose...           verbose mode, add more of these for more information [env: RCR_VERBOSE=]
-        -w, --workers <WORKERS>    number of threads to use for processing, may increase performance
-                                   (note: depends on storage bandwidth, more may be slower than fewer)
-                                   [env: RCR_WORKERS=] [default: 1]
-        -h, --help                 Print help information
-        -V, --version              Print version information
+    Arguments:
+    <FILES>...  list of files to check against reference dat file
+
+    Options:
+    -d, --dat-file <DAT_FILE>  name of the dat file to use as reference [env: RCR_DATFILE=]
+    -e, --exclude <EXCLUDE>    comma seperated list of suffixes to exclude when scanning,
+                                overrides any files on command line
+                                [env: RCR_EXCLUDE=]
+    -f, --fast                 fast match mode for single rom games,
+                                may show incorrect names if multiple identical hashes
+                                [env: RCR_FAST=]
+    -i, --ignore-suffix        ignore the suffix when checking for name match
+                                [env: RCR_IGNORE_SUFFIX=]
+    -M, --method <METHOD>      default method to use for matching reference entries
+                                [env: RCR_METHOD=] [default: sha1]
+                                [possible values: sha256, sha1, md5]
+    -m, --missing              print the missing sets after scan
+                                [env: RCR_missing=]
+    -r, --rename               rename mismatched files to reference filename if unambiguous
+                                [env: RCR_RENAME=]
+    -R, --recurse              recurse into directories specified on command line
+                                [env: RCR_RECURSE=]
+    -v, --verbose...           verbose mode, add more of these for more information
+                                [env: RCR_VERBOSE=]
+    -w, --workers <WORKERS>    number of threads to use for processing,
+                                may decrease performance if I/O bound
+                                [env: RCR_WORKERS=] [default: 1]
+    -h, --help                 Print help
+    -V, --version              Print version
+
 
 
 Limitations
