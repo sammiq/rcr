@@ -35,8 +35,7 @@ struct Cli {
     #[clap(short, long, env = "RCR_IGNORE_SUFFIX")]
     ignore_suffix: bool,
 
-    /// method to use for matching reference entries
-    /// (note: Sha256 is not well supported in dat files from many sources)
+    /// default method to use for matching reference entries
     #[clap(short('M'), long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment, env = "RCR_METHOD")]
     method: MatchMethod,
 
@@ -56,8 +55,8 @@ struct Cli {
     #[clap(short, long, action = clap::ArgAction::Count, env = "RCR_VERBOSE")]
     verbose: u8,
 
-    /// number of threads to use for processing, may increase performance
-    /// (note: depends on storage bandwidth, more may be slower than fewer)
+    /// number of threads to use for processing,
+    /// may decrease performance if I/O bound
     #[clap(short, long, default_value_t = 1, verbatim_doc_comment, env = "RCR_WORKERS")]
     workers: u8,
 
