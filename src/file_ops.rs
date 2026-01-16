@@ -47,7 +47,7 @@ pub fn is_hidden_file(file: &Utf8Path) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(unix)]
+#[cfg(not(windows))]
 pub fn is_hidden_file(file: &Utf8Path) -> bool {
     file.file_name().map(|filename| filename.starts_with('.')).unwrap_or(false)
 }
