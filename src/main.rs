@@ -23,7 +23,7 @@ struct Cli {
 
     /// comma seperated list of suffixes to exclude when scanning,
     /// overrides any files on command line
-    #[clap(short, long, value_delimiter = ',', verbatim_doc_comment, env = "RCR_EXCLUDE")]
+    #[clap(short, long, value_delimiter = ',', default_value = "m3u,dat", verbatim_doc_comment, env = "RCR_EXCLUDE")]
     exclude: Vec<String>,
 
     /// fast match mode for single rom games,
