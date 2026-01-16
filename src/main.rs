@@ -40,7 +40,7 @@ struct Cli {
     method: MatchMethod,
 
     /// print the missing sets after scan
-    #[clap(short, long, env = "RCR_missing")]
+    #[clap(short, long, env = "RCR_MISSING")]
     missing: bool,
 
     /// rename mismatched files to reference filename if unambiguous
@@ -207,22 +207,26 @@ fn process_file<'x>(
         EMPTY_TREE
     } else if file_path.is_dir() {
         if args.recurse {
-            let entries = file_path
+            match file_path
                 .read_dir_utf8()
                 .expect("could not read directory")
                 .map(|res| res.map(|e| e.path().to_owned()))
                 .collect::<Result<Vec<_>, std::io::Error>>()
-                .expect("could not read directory items");
-
-            entries
-                .par_iter()
-                .map(|path| process_file(args, df_xml, method, exclusions, path))
-                .reduce(BTreeMap::new, |mut acc, e| {
-                    for (k, v) in e {
-                        acc.entry(k).or_default().extend(v.iter());
-                    }
-                    acc
-                })
+            {
+                Ok(entries) => entries
+                    .par_iter()
+                    .map(|path| process_file(args, df_xml, method, exclusions, path))
+                    .reduce(BTreeMap::new, |mut acc, e| {
+                        for (k, v) in e {
+                            acc.entry(k).or_default().extend(v.iter());
+                        }
+                        acc
+                    }),
+                Err(err) => {
+                    warn!("directory {file_path} could not be read due to {err}, skipping it");
+                    EMPTY_TREE
+                }
+            }
         } else {
             info!("{file_path} is a directory, skipping it (use -R to recurse)");
             EMPTY_TREE
@@ -280,7 +284,7 @@ fn process_zip_file<'x>(
         let mut unique_games = BTreeSet::new();
 
         for (file, hash_string) in hashed {
-            let mut inner_path = Utf8PathBuf::from(&file);
+            let mut inner_path = Utf8PathBuf::from(&file_path);
             inner_path.push(file);
             match check_file(df_xml, &inner_path, &hash_string, method, args.fast, false, args.ignore_suffix) {
                 Ok(found_rom_nodes) => {
@@ -388,6 +392,12 @@ fn hash_zip_file_contents(file: &Utf8Path, method: MatchMethod) -> Result<BTreeM
     Ok(found_files)
 }
 
+fn match_rom_filename(node: &Node, file_name: &str, ignore_suffix: bool) -> bool {
+    get_name_from_node(node)
+        .map(|rom_name| match_filename(file_name, rom_name, ignore_suffix))
+        .unwrap_or(false)
+}
+
 fn check_file<'a>(
     df_xml: &'a Document,
     file_path: &Utf8Path,
@@ -428,9 +438,12 @@ fn check_file<'a>(
         }
         _ => {
             trace!("found multiple matches for hash, trying to match by name");
-            if found_nodes.iter().any(|node| get_name_from_node(node) == Some(file_name)) {
+            if found_nodes
+                .iter()
+                .any(|node| match_rom_filename(node, file_name, ignore_suffix))
+            {
                 trace!("found at least one match for name, the file is ok, remove other nodes");
-                found_nodes.retain(|node| get_name_from_node(node) == Some(file_name));
+                found_nodes.retain(|node| match_rom_filename(node, file_name, ignore_suffix));
                 println!("[ OK ] {hash} {file_path}");
             } else {
                 trace!("found at least no matches for name, the file is misnamed but could be multiple options");
