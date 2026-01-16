@@ -6,6 +6,8 @@ use sha1::Sha1;
 use sha2::Sha256;
 use std::fs::File;
 use std::io::{copy, BufReader, Read, Write};
+#[cfg(windows)]
+use std::os::windows::prelude::*;
 
 pub fn rename_file_if_possible(in_file: &Utf8Path, file_name: &str) -> Result<Utf8PathBuf> {
     let mut out_file = Utf8PathBuf::from(in_file);
@@ -36,4 +38,27 @@ pub fn calc_hash_for_digest<D: Digest + Write, R: Read + ?Sized>(reader: &mut R)
 pub fn reader_for_filename(file: &Utf8Path) -> Result<BufReader<File>> {
     let f = File::open(file)?;
     Ok(BufReader::new(f))
+}
+
+#[cfg(windows)]
+pub fn is_hidden_file(file: &Utf8Path) -> bool {
+    file.metadata()
+        .map(|metadata| metadata.file_attributes() & 0x00000002 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+pub fn is_hidden_file(file: &Utf8Path) -> bool {
+    file.file_name().map(|filename| filename.starts_with('.')).unwrap_or(false)
+}
+
+pub fn match_filename(file_name: &str, rom_name: &str, ignore_suffix: bool) -> bool {
+    if ignore_suffix {
+        let f = Utf8Path::new(file_name).with_extension("");
+        let r = Utf8Path::new(rom_name).with_extension("");
+
+        f == r
+    } else {
+        rom_name == file_name
+    }
 }

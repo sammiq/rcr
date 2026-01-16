@@ -31,14 +31,26 @@ struct Cli {
     #[clap(short, long, verbatim_doc_comment, env = "RCR_FAST")]
     fast: bool,
 
+    /// ignore the suffix when checking for name match
+    #[clap(short, long, env = "RCR_IGNORE_SUFFIX")]
+    ignore_suffix: bool,
+
     /// method to use for matching reference entries
     /// (note: Sha256 is not well supported in dat files from many sources)
-    #[clap(short, long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment, env = "RCR_METHOD")]
+    #[clap(short('M'), long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment, env = "RCR_METHOD")]
     method: MatchMethod,
+
+    /// print the missing sets after scan
+    #[clap(short, long, env = "RCR_missing")]
+    missing: bool,
 
     /// rename mismatched files to reference filename if unambiguous
     #[clap(short, long, env = "RCR_RENAME")]
     rename: bool,
+
+    /// recurse into directories specified on command line
+    #[clap(short('R'), long, env = "RCR_RECURSE")]
+    recurse: bool,
 
     /// verbose mode, add more of these for more information
     #[clap(short, long, action = clap::ArgAction::Count, env = "RCR_VERBOSE")]
@@ -59,6 +71,24 @@ enum MatchMethod {
     Sha256,
     Sha1,
     Md5,
+}
+
+impl MatchMethod {
+    fn as_str(&self) -> &'static str {
+        match self {
+            MatchMethod::Sha256 => "sha256",
+            MatchMethod::Sha1 => "sha1",
+            MatchMethod::Md5 => "md5",
+        }
+    }
+
+    fn hash_data<R: std::io::Read + ?Sized>(&self, reader: &mut R) -> Result<String> {
+        match self {
+            MatchMethod::Sha256 => calc_sha256_for_reader(reader),
+            MatchMethod::Sha1 => calc_sha1_for_reader(reader),
+            MatchMethod::Md5 => calc_md5_for_reader(reader),
+        }
+    }
 }
 
 const EMPTY_TREE: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
@@ -90,32 +120,59 @@ fn main() -> Result<()> {
     trace!("reading dat file {}", args.dat_file);
     //read in the xml to buffer, roxmltree is a bit fiddly with ownership
     let df_buffer = std::fs::read_to_string(&args.dat_file).context("Unable to read reference dat file")?;
-    let df_xml = Document::parse_with_options(df_buffer.as_str(), ParsingOptions {
-        allow_dtd: true,
-        ..Default::default()
-    }).context("Unable to parse reference dat file")?;
+    let df_xml = Document::parse_with_options(
+        df_buffer.as_str(),
+        ParsingOptions {
+            allow_dtd: true,
+            ..Default::default()
+        },
+    )
+    .context("Unable to parse reference dat file")?;
     info!("dat file {} read successfully", args.dat_file);
 
     //ensure that the dat file will support this usage
     let method = sanity_check_match_method(&df_xml, args.method)?;
     if method != args.method {
         warn!(
-            "matching files using {} after checking, as reference dat file missing those data",
-            hash_name_for_method(method)
+            "matching files using {} after checking, as reference dat file missing requested format",
+            method.as_str()
         );
     }
 
-    let found_games = process_files(&args, &df_xml, method);
+    let found_games: BTreeMap<Node<'_, '_>, BTreeSet<Node<'_, '_>>> = process_files(&args, &df_xml, method);
 
     //process sets
     if !found_games.is_empty() {
-        println!("--SETS --");
-        for (game, found_roms) in found_games {
-            if let Err(error) = check_game(method, &game, &found_roms) {
+        println!("-- FOUND SETS  --");
+        for (game, found_roms) in &found_games {
+            if let Err(error) = check_game(method, game, found_roms) {
                 warn!("could not process game, error was '{error}'");
             }
         }
     }
+
+    println!();
+
+    let games = df_xml.root_element().children().filter(is_game_node);
+    let mut total_games = 0usize;
+    if args.missing {
+        let found_names: BTreeSet<&str> = found_games
+            .keys()
+            .map(|k| get_name_from_node(k).unwrap_or_default())
+            .collect();
+        println!("--MISSING SETS --");
+        for game in games {
+            total_games += 1;
+            let game_name = get_name_from_node(&game).context("game nodes in reference dat file should always have a name")?;
+            if !found_names.contains(game_name) {
+                println!("[MISS]  {game_name}");
+            }
+        }
+    } else {
+        total_games = games.count();
+    }
+
+    println!("Found {}/{} sets ({} Missing)", found_games.len(), total_games, total_games - found_games.len());
 
     Ok(())
 }
@@ -124,48 +181,79 @@ fn process_files<'x>(args: &Cli, df_xml: &'x Document, method: MatchMethod) -> B
     let mut exclusions = BTreeSet::new();
     exclusions.extend(args.exclude.iter().cloned());
 
-    println!("--FILES--");
+    println!("-- FOUND FILES --");
     let found_games = args
         .files
         .par_iter()
-        .map(|file_path| {
-            if !file_path.is_file() {
-                warn!("{file_path} is not a regular file, skipping it");
-                EMPTY_TREE
-            } else if file_path.extension().map(|ext| exclusions.contains(ext)).unwrap_or(false) {
-                info!("{file_path} is has an excluded extension, skipping it");
-                EMPTY_TREE
-            } else if file_path.extension() == Some("zip") {
-                process_zip_file(args, df_xml, file_path, method)
-            } else {
-                process_rom_file(args, df_xml, file_path, method)
+        .map(|file_path| process_file(args, df_xml, method, &exclusions, file_path))
+        .reduce(BTreeMap::new, |mut acc, e| {
+            for (k, v) in e {
+                acc.entry(k).or_default().extend(v.iter());
             }
-        })
-        .reduce(
-            BTreeMap::new,
-            |mut acc, e| {
-                for (k, v) in e {
-                    acc.entry(k).or_default().extend(v.iter());
-                }
-                acc
-            },
-        );
+            acc
+        });
 
     found_games
+}
+
+fn process_file<'x>(
+    args: &Cli,
+    df_xml: &'x Document,
+    method: MatchMethod,
+    exclusions: &BTreeSet<String>,
+    file_path: &Utf8Path,
+) -> BTreeMap<Node<'x, 'x>, BTreeSet<Node<'x, 'x>>> {
+    if is_hidden_file(file_path) {
+        info!("{file_path} is hidden, skipping it");
+        EMPTY_TREE
+    } else if file_path.is_dir() {
+        if args.recurse {
+            let entries = file_path
+                .read_dir_utf8()
+                .expect("could not read directory")
+                .map(|res| res.map(|e| e.path().to_owned()))
+                .collect::<Result<Vec<_>, std::io::Error>>()
+                .expect("could not read directory items");
+
+            entries
+                .par_iter()
+                .map(|path| process_file(args, df_xml, method, exclusions, path))
+                .reduce(BTreeMap::new, |mut acc, e| {
+                    for (k, v) in e {
+                        acc.entry(k).or_default().extend(v.iter());
+                    }
+                    acc
+                })
+        } else {
+            info!("{file_path} is a directory, skipping it (use -R to recurse)");
+            EMPTY_TREE
+        }
+    } else if !file_path.is_file() {
+        warn!("{file_path} is not a regular file, skipping it");
+        EMPTY_TREE
+    } else if file_path.extension().map(|ext| exclusions.contains(ext)).unwrap_or(false) {
+        info!("{file_path} has an excluded extension, skipping it");
+        EMPTY_TREE
+    } else if file_path.extension() == Some("zip") {
+        process_zip_file(args, df_xml, file_path, method)
+    } else {
+        process_rom_file(args, df_xml, file_path, method)
+    }
 }
 
 fn process_rom_file<'x>(
     args: &Cli,
     df_xml: &'x Document,
-    file_path: &Utf8PathBuf,
+    file_path: &Utf8Path,
     method: MatchMethod,
 ) -> BTreeMap<Node<'x, 'x>, BTreeSet<Node<'x, 'x>>> {
     //use a b-tree map for natural sorting
     let mut found_games = BTreeMap::new();
 
     match reader_for_filename(file_path)
-        .and_then(|mut reader| hash_candidate_file_with_method(&mut reader, method))
-        .and_then(|hash_string| check_file(df_xml, file_path, &hash_string, method, args.fast, args.rename)) {
+        .and_then(|mut reader| method.hash_data(&mut reader))
+        .and_then(|hash_string| check_file(df_xml, file_path, &hash_string, method, args.fast, args.rename, args.ignore_suffix))
+    {
         Ok(found_rom_nodes) => {
             for rom_node in found_rom_nodes {
                 if let Some(game_node) = rom_node.parent().filter(is_game_node) {
@@ -174,7 +262,7 @@ fn process_rom_file<'x>(
                 };
             }
         }
-        Err(error) => warn!("could not process '{file_path}', skipping; error was '{error}'")
+        Err(error) => warn!("could not process '{file_path}', skipping; error was '{error}'"),
     }
 
     found_games
@@ -183,37 +271,36 @@ fn process_rom_file<'x>(
 fn process_zip_file<'x>(
     args: &Cli,
     df_xml: &'x Document,
-    file_path: &Utf8PathBuf,
+    file_path: &Utf8Path,
     method: MatchMethod,
 ) -> BTreeMap<Node<'x, 'x>, BTreeSet<Node<'x, 'x>>> {
     //use a b-tree map for natural sorting
     let mut found_games = BTreeMap::new();
 
-    if let Err(error) = hash_zip_file_contents(file_path, method)
-        .map(|hashed| {
-            let mut unique_games = BTreeSet::new();
+    if let Err(error) = hash_zip_file_contents(file_path, method).map(|hashed| {
+        let mut unique_games = BTreeSet::new();
 
-            for (file, hash_string) in hashed {
-                let mut inner_path = Utf8PathBuf::from(&file);
-                inner_path.push(file);
-                match check_file(df_xml, &inner_path, &hash_string, method, args.fast, false) {
-                    Ok(found_rom_nodes) => {
-                        for rom_node in found_rom_nodes {
-                            if let Some(game_node) = rom_node.parent().filter(is_game_node) {
-                                unique_games.insert(game_node);
-                                //use a b-tree set for natural sorting
-                                found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
-                            };
-                        }
+        for (file, hash_string) in hashed {
+            let mut inner_path = Utf8PathBuf::from(&file);
+            inner_path.push(file);
+            match check_file(df_xml, &inner_path, &hash_string, method, args.fast, false, args.ignore_suffix) {
+                Ok(found_rom_nodes) => {
+                    for rom_node in found_rom_nodes {
+                        if let Some(game_node) = rom_node.parent().filter(is_game_node) {
+                            unique_games.insert(game_node);
+                            //use a b-tree set for natural sorting
+                            found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
+                        };
                     }
-                    Err(error) => warn!("could not process '{inner_path}', skipping; error was '{error}'"),
                 }
+                Err(error) => warn!("could not process '{inner_path}', skipping; error was '{error}'"),
             }
-
-            report_zip_file(file_path, &unique_games, args.rename)
-        }) {
-            warn!("could not process '{file_path}', error was '{error}'")
         }
+
+        report_zip_file(file_path, &unique_games, args.rename)
+    }) {
+        warn!("could not process '{file_path}', error was '{error}'")
+    }
 
     found_games
 }
@@ -265,7 +352,7 @@ fn sanity_check_match_method_inner(df_xml: &Document, method: MatchMethod, recur
     if df_xml
         .descendants()
         .filter(is_rom_node)
-        .any(|n| get_hash_from_rom_node(&n, hash_name_for_method(method)).is_some())
+        .any(|n| get_hash_from_rom_node(&n, method.as_str()).is_some())
     {
         Ok(method)
     } else {
@@ -288,7 +375,7 @@ fn hash_zip_file_contents(file: &Utf8Path, method: MatchMethod) -> Result<BTreeM
     for i in 0..zip.len() {
         let mut inner_file = zip.by_index(i)?; //fix error
         if inner_file.is_file() {
-            match hash_candidate_file_with_method(&mut inner_file, method) {
+            match method.hash_data(&mut inner_file) {
                 Ok(hash) => {
                     debug!("hash for {} in zip {} is {}", inner_file.name(), file, hash);
                     found_files.insert(inner_file.name().to_string(), hash);
@@ -307,10 +394,11 @@ fn check_file<'a>(
     method: MatchMethod,
     fast: bool,
     rename: bool,
+    ignore_suffix: bool,
 ) -> Result<Vec<Node<'a, 'a>>> {
     let file_name = file_path.file_name().context("file path should always have a file name")?;
     debug!("hash for '{file_path}' ('{file_name}') = {hash}");
-    let mut found_nodes = find_rom_nodes_by_hash(df_xml, hash_name_for_method(method), hash, fast);
+    let mut found_nodes = find_rom_nodes_by_hash(df_xml, method.as_str(), hash, fast);
     debug!("found nodes by hash {:?}", found_nodes);
     match found_nodes.len() {
         0 => {
@@ -322,7 +410,7 @@ fn check_file<'a>(
             let node = found_nodes.first().expect("should never fail as we checked length");
             let node_name = get_name_from_node(node).context("rom nodes in reference dat file should always have a name")?;
 
-            if node_name == file_name {
+            if match_filename(file_name, node_name, ignore_suffix) {
                 println!("[ OK ] {hash} {file_path}");
             } else if rename {
                 debug!("renaming {file_path} to {node_name}");
@@ -365,7 +453,7 @@ fn check_game(method: MatchMethod, game: &Node, found_roms: &BTreeSet<Node>) -> 
     } else {
         all_roms.difference(found_roms).try_for_each(|missing| {
             let missing_name = get_name_from_node(missing).context("rom nodes in reference dat file should always have a name")?;
-            let missing_hash = get_hash_from_rom_node(missing, hash_name_for_method(method))
+            let missing_hash = get_hash_from_rom_node(missing, method.as_str())
                 .context("rom nodes in reference dat file should have a hash")?;
             println!("[WARN]  {game_name} is missing {missing_hash} {missing_name}");
             Ok(())
@@ -385,18 +473,3 @@ fn set_logging_level(verbose: u8) {
     info!("Log Level set to {}", max_level);
 }
 
-fn hash_candidate_file_with_method<R: std::io::Read + ?Sized>(reader: &mut R, method: MatchMethod) -> Result<String> {
-    match method {
-        MatchMethod::Sha256 => calc_sha256_for_reader(reader),
-        MatchMethod::Sha1 => calc_sha1_for_reader(reader),
-        MatchMethod::Md5 => calc_md5_for_reader(reader),
-    }
-}
-
-fn hash_name_for_method(method: MatchMethod) -> &'static str {
-    match method {
-        MatchMethod::Sha256 => "sha256",
-        MatchMethod::Sha1 => "sha1",
-        MatchMethod::Md5 => "md5",
-    }
-}
