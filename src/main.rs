@@ -138,7 +138,7 @@ fn main() -> Result<()> {
         );
     }
 
-    let found_games: BTreeMap<Node<'_, '_>, BTreeSet<Node<'_, '_>>> = process_files(&args, &df_xml, method);
+    let found_games = process_files(&args, &df_xml, method);
 
     //process sets
     if !found_games.is_empty() {
@@ -379,7 +379,9 @@ fn hash_zip_file_contents(file: &Utf8Path, method: MatchMethod) -> Result<BTreeM
                     debug!("hash for {} in zip {} is {}", inner_file.name(), file, hash);
                     found_files.insert(inner_file.name().to_string(), hash);
                 }
-                Err(error) => warn!("could not process '{}' in zip file '{file}', error was '{error}'", inner_file.name()),
+                Err(error) => {
+                    warn!("could not process '{}' in zip file '{file}', error was '{error}'", inner_file.name())
+                }
             }
         }
     }
@@ -452,8 +454,8 @@ fn check_game(method: MatchMethod, game: &Node, found_roms: &BTreeSet<Node>) -> 
     } else {
         all_roms.difference(found_roms).try_for_each(|missing| {
             let missing_name = get_name_from_node(missing).context("rom nodes in reference dat file should always have a name")?;
-            let missing_hash = get_hash_from_rom_node(missing, method.as_str())
-                .context("rom nodes in reference dat file should have a hash")?;
+            let missing_hash =
+                get_hash_from_rom_node(missing, method.as_str()).context("rom nodes in reference dat file should have a hash")?;
             println!("[WARN]  {game_name} is missing {missing_hash} {missing_name}");
             Ok(())
         })
@@ -471,4 +473,3 @@ fn set_logging_level(verbose: u8) {
     log::set_max_level(max_level);
     info!("Log Level set to {}", max_level);
 }
-
