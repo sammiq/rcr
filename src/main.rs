@@ -20,6 +20,11 @@ type GameMap<'x> = BTreeMap<Node<'x, 'x>, NodeSet<'x>>;
 #[derive(Debug, Parser)]
 #[clap(version, about, long_about = None)]
 struct Cli {
+     /// count any matches in a zip file as a match, otherwise
+    /// the file count must match for a partial match
+    #[clap(short, long, verbatim_doc_comment, env = "RCR_ANY_CONTENTS")]
+    any_contents: bool,
+
     /// name of the dat file to use as reference
     #[clap(short, long, value_parser, value_hint = ValueHint::FilePath, env = "RCR_DATFILE")]
     dat_file: Utf8PathBuf,
@@ -49,11 +54,6 @@ struct Cli {
     /// ignore the suffix when checking for name match
     #[clap(short, long, env = "RCR_IGNORE_SUFFIX")]
     ignore_suffix: bool,
-
-    /// count any matches in a zip file as a match, otherwise
-    /// the file count must match for a partial match
-    #[clap(short, long, verbatim_doc_comment, env = "RCR_ANY_CONTENTS")]
-    any_contents: bool,
 
     /// default method to use for matching reference entries
     #[clap(short('M'), long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment, env = "RCR_METHOD")]
@@ -89,7 +89,7 @@ struct Cli {
 
     /// number of threads to use for processing,
     /// may decrease performance if I/O bound
-    #[clap(short, long, default_value_t = 1, verbatim_doc_comment, env = "RCR_WORKERS")]
+    #[clap(short('W'), long, default_value_t = 1, verbatim_doc_comment, env = "RCR_WORKERS")]
     workers: u8,
 
     /// list of files to check against reference dat file
@@ -139,7 +139,7 @@ impl MatchMethod {
     }
 }
 
-const EMPTY_TREE: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
+const EMPTY_TREE: GameMap = GameMap::new();
 
 fn main() -> Result<()> {
     simple_logger::SimpleLogger::new()
@@ -247,6 +247,16 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn merge_game_maps<'x>(
+    mut acc: GameMap<'x>,
+    e: GameMap<'x>,
+) -> GameMap<'x> {
+    for (k, v) in e {
+        acc.entry(k).or_default().extend(v.iter());
+    }
+    acc
+}
+
 fn process_files<'x>(args: &Cli, df_xml: &'x Document) -> GameMap<'x> {
     let mut exclusions = BTreeSet::new();
     exclusions.extend(args.exclude.iter().cloned());
@@ -256,12 +266,7 @@ fn process_files<'x>(args: &Cli, df_xml: &'x Document) -> GameMap<'x> {
         .files
         .par_iter()
         .map(|file_path| process_file(args, df_xml, &exclusions, file_path))
-        .reduce(BTreeMap::new, |mut acc, e| {
-            for (k, v) in e {
-                acc.entry(k).or_default().extend(v.iter());
-            }
-            acc
-        });
+        .reduce(GameMap::new, merge_game_maps);
 
     found_games
 }
@@ -281,12 +286,7 @@ fn process_file<'x>(args: &Cli, df_xml: &'x Document, exclusions: &BTreeSet<Stri
                 Ok(entries) => entries
                     .par_iter()
                     .map(|path| process_file(args, df_xml, exclusions, path))
-                    .reduce(BTreeMap::new, |mut acc, e| {
-                        for (k, v) in e {
-                            acc.entry(k).or_default().extend(v.iter());
-                        }
-                        acc
-                    }),
+                    .reduce(GameMap::new, merge_game_maps),
                 Err(err) => {
                     warn!("directory {file_path} could not be read due to {err}, skipping it");
                     EMPTY_TREE
@@ -311,7 +311,7 @@ fn process_file<'x>(args: &Cli, df_xml: &'x Document, exclusions: &BTreeSet<Stri
 
 fn process_rom_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) -> GameMap<'x> {
     //use a b-tree map for natural sorting
-    let mut found_games = BTreeMap::new();
+    let mut found_games = GameMap::new();
 
     match reader_for_filename(file_path)
         .and_then(|mut reader| args.method.hash_data(&mut reader))
@@ -321,7 +321,7 @@ fn process_rom_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) 
             for rom_node in found_rom_nodes {
                 if let Some(game_node) = rom_node.parent().filter(is_game_node) {
                     //use a b-tree set for natural sorting
-                    found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
+                    found_games.entry(game_node).or_insert_with(NodeSet::new).insert(rom_node);
                 };
             }
         }
@@ -347,7 +347,7 @@ fn process_zip_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) 
                         if let Some(game_node) = rom_node.parent().filter(is_game_node) {
                             unique_games.insert(game_node);
                             //use a b-tree set for natural sorting
-                            found_games.entry(game_node).or_insert_with(BTreeSet::new).insert(rom_node);
+                            found_games.entry(game_node).or_insert_with(NodeSet::new).insert(rom_node);
                         };
                     }
                 }
@@ -372,7 +372,7 @@ fn filter_zip_matches<'x>(
     found_games: &mut GameMap<'x>,
     unique_games: &mut NodeSet<'x>,
 ) -> bool {
-    let full_games: BTreeSet<Node> = unique_games
+    let full_games: NodeSet = unique_games
         .extract_if(.., |game_node| {
             let rom_count = game_node.children().filter(is_rom_node).count();
             rom_count == found_games[game_node].len()
@@ -404,14 +404,14 @@ fn filter_zip_matches<'x>(
                 unique_games.clear();
                 unique_games.insert(game_node);
                 found_games.clear();
-                found_games.insert(game_node, BTreeSet::new());
+                found_games.insert(game_node, NodeSet::new());
             }
         }
     }
 
     if !args.any_contents {
         //ignore partial matches if the count of files inside the zip is too small
-        let full_games: BTreeSet<Node> = unique_games
+        let full_games: NodeSet = unique_games
             .extract_if(.., |game_node| {
                 let rom_count = game_node.children().filter(is_rom_node).count();
                 rom_count <= num_files
@@ -438,7 +438,7 @@ fn filter_zip_matches<'x>(
     exact_matches
 }
 
-fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &BTreeSet<Node>, exact_matches: bool) -> Result<()> {
+fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &NodeSet, exact_matches: bool) -> Result<()> {
     match unique_games.len() {
         0 => {
             info!("zip file '{file_path}' seems to match no games");
@@ -669,8 +669,8 @@ fn check_file<'a>(
     Ok(found_nodes)
 }
 
-fn check_game(args: &Cli, game: &Node, found_roms: &BTreeSet<Node>) -> Result<()> {
-    let all_roms: BTreeSet<Node> = game.children().filter(is_rom_node).collect();
+fn check_game(args: &Cli, game: &Node, found_roms: &NodeSet) -> Result<()> {
+    let all_roms: NodeSet = game.children().filter(is_rom_node).collect();
     let game_name = get_name_from_node(game).context("game nodes in reference dat file should always have a name")?;
     if found_roms.len() == all_roms.len() {
         println!("[ OK ]  {game_name}");
