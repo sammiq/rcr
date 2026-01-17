@@ -377,7 +377,7 @@ fn process_zip_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) 
                 {
                     //contains the game already, so remove the others
                     unique_games.retain(|game_node| get_name_from_node(game_node) == Some(zip_name));
-                    found_games.retain(|game_node, _| get_name_from_node(game_node) == Some(zip_name));
+                    found_games.retain(|game_node, _| unique_games.contains(game_node));
                 } else {
                     //doesn't contain the game to add a blank entry for it
                     unique_games.clear();
@@ -430,13 +430,7 @@ fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &BTreeSet<Nod
             if args.missing == OutputFilter::Files || args.missing == OutputFilter::All {
                 println!("[MISS] ---------------------------------------- {file_path} - unknown, no match");
             }
-            if args.sort == SortOption::Unknown || args.sort == SortOption::All {
-                let new_path = args.sort_dir.join("unknown");
-                match move_file_if_possible(file_path, &new_path) {
-                    Ok(new_name) => info!("moved {file_path} to {new_path} ({new_name})"),
-                    Err(err) => warn!("could not move '{file_path}' to '{new_path}' - {err}"),
-                }
-            }
+            sort_file(args, file_path, SortOption::Unknown);
         }
         1 => {
             let game_node = unique_games.iter().next().expect("should never fail as we checked length");
@@ -449,12 +443,10 @@ fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &BTreeSet<Nod
                 file_path.to_path_buf()
             };
 
-            if exact_matches && (args.sort == SortOption::Matched || args.sort == SortOption::All) {
-                let new_path = args.sort_dir.join("matched");
-                match move_file_if_possible(&current_file_path, &new_path) {
-                    Ok(new_name) => info!("moved {file_path} to {new_path} ({new_name})"),
-                    Err(err) => warn!("could not move '{current_file_path}' to '{new_path}' - {err}"),
-                }
+            if exact_matches {
+                sort_file(args, &current_file_path, SortOption::Matched);
+            } else {
+                sort_file(args, &current_file_path, SortOption::Warning);
             }
         }
         _ => {
@@ -464,13 +456,7 @@ fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &BTreeSet<Nod
                 .flat_map(get_name_from_node)
                 .for_each(|name| info!("       {name}"));
 
-            if exact_matches && (args.sort == SortOption::Warning || args.sort == SortOption::All) {
-                let new_path = args.sort_dir.join("warning");
-                match move_file_if_possible(&file_path, &new_path) {
-                    Ok(new_name) => info!("moved {file_path} to {new_path} ({new_name})"),
-                    Err(err) => warn!("could not move '{file_path}' to '{new_path}' - {err}"),
-                }
-            }
+            sort_file(args, file_path, SortOption::Warning);
         }
     }
     Ok(())
@@ -547,6 +533,22 @@ fn match_rom_filename(node: &Node, file_name: &str, ignore_suffix: bool) -> bool
         .unwrap_or(false)
 }
 
+fn sort_file(args: &Cli, file_path: &Utf8Path, sort: SortOption) {
+    if args.sort == sort || args.sort == SortOption::All {
+        let subdir = match sort {
+            SortOption::Unknown => "unknown",
+            SortOption::Matched => "matched",
+            SortOption::Warning => "warning",
+            _ => return, // Do nothing
+        };
+        let new_path = args.sort_dir.join(subdir);
+        match move_file_if_possible(file_path, &new_path) {
+            Ok(new_name) => info!("moved {file_path} to {new_path} ({new_name})"),
+            Err(err) => warn!("could not move '{file_path}' to '{new_path}' - {err}"),
+        }
+    }
+}
+
 fn check_file<'a>(
     args: &Cli,
     df_xml: &'a Document,
@@ -564,12 +566,8 @@ fn check_file<'a>(
             if args.missing == OutputFilter::Files || args.missing == OutputFilter::All {
                 println!("[MISS] {hash} {file_path} - unknown, no match");
             }
-            if allow_rename_or_sort && (args.sort == SortOption::Unknown || args.sort == SortOption::All) {
-                let new_path = args.sort_dir.join("unknown");
-                match move_file_if_possible(file_path, &new_path) {
-                    Ok(_) => info!("moved {file_path} to {new_path}"),
-                    Err(err) => warn!("could not move '{file_path}' to '{new_path}' - {err}"),
-                }
+            if allow_rename_or_sort {
+                sort_file(args, file_path, SortOption::Unknown);
             }
         }
         1 => {
@@ -581,12 +579,8 @@ fn check_file<'a>(
                 if args.found == OutputFilter::Files || args.found == OutputFilter::All {
                     println!("[ OK ] {hash} {file_path}");
                 }
-                if allow_rename_or_sort && (args.sort == SortOption::Matched || args.sort == SortOption::All) {
-                    let new_path = args.sort_dir.join("matched");
-                    match move_file_if_possible(file_path, &new_path) {
-                        Ok(_) => info!("moved {file_path} to {new_path}"),
-                        Err(err) => warn!("could not move '{file_path}' to '{new_path}' - {err}"),
-                    }
+                if allow_rename_or_sort {
+                    sort_file(args, file_path, SortOption::Matched);
                 }
             } else if allow_rename_or_sort {
                 if args.rename {
@@ -596,35 +590,17 @@ fn check_file<'a>(
                             if args.found == OutputFilter::Files || args.found == OutputFilter::All {
                                 println!("[ OK ] {hash} {new_path} (renamed from {file_path}");
                             }
-                            if args.sort == SortOption::Matched || args.sort == SortOption::All {
-                                let new_path = args.sort_dir.join("matched");
-                                match move_file_if_possible(file_path, &new_path) {
-                                    Ok(new_name) => info!("moved {file_path} to {new_path} ({new_name})"),
-                                    Err(err) => warn!("could not move '{file_path}' to '{new_path}' - {err}"),
-                                }
-                            }
+                            sort_file(args, file_path, SortOption::Matched);
                         }
                         Err(err) => {
                             warn!("could not rename '{file_path}' to '{node_name}' - {err}");
                             println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
-                            if args.sort == SortOption::Warning || args.sort == SortOption::All {
-                                let new_path = args.sort_dir.join("warning");
-                                match move_file_if_possible(&file_path, &new_path) {
-                                    Ok(new_name) => info!("moved {file_path} to {new_path} ({new_name})"),
-                                    Err(err) => warn!("could not move '{file_path}' to '{new_path}' - {err}"),
-                                }
-                            }
+                            sort_file(args, &file_path, SortOption::Warning);
                         }
                     }
                 } else {
                     println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
-                    if args.sort == SortOption::Warning || args.sort == SortOption::All {
-                        let new_path = args.sort_dir.join("warning");
-                        match move_file_if_possible(&file_path, &new_path) {
-                            Ok(new_name) => info!("moved {file_path} to {new_path} ({new_name})"),
-                            Err(err) => warn!("could not move '{file_path}' to '{new_path}' - {err}"),
-                        }
-                    }
+                    sort_file(args, &file_path, SortOption::Warning);
                 }
             } else {
                 println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
@@ -641,12 +617,8 @@ fn check_file<'a>(
                 if args.found == OutputFilter::Files || args.found == OutputFilter::All {
                     println!("[ OK ] {hash} {file_path}");
                 }
-                if allow_rename_or_sort && (args.sort == SortOption::Matched || args.sort == SortOption::All) {
-                    let new_path = args.sort_dir.join("matched");
-                    match move_file_if_possible(file_path, &new_path) {
-                        Ok(_) => info!("moved {file_path} to {new_path}"),
-                        Err(err) => warn!("could not move '{file_path}' to '{new_path}' - {err}"),
-                    }
+                if allow_rename_or_sort {
+                    sort_file(args, file_path, SortOption::Matched);
                 }
             } else {
                 trace!("found at least no matches for name, the file is misnamed but could be multiple options");
@@ -656,12 +628,8 @@ fn check_file<'a>(
                     .flat_map(get_name_from_node)
                     .for_each(|name| println!("       {hash} {name}"));
 
-                if allow_rename_or_sort && (args.sort == SortOption::Warning || args.sort == SortOption::All) {
-                    let new_path = args.sort_dir.join("warning");
-                    match move_file_if_possible(&file_path, &new_path) {
-                        Ok(new_name) => info!("moved {file_path} to {new_path} ({new_name})"),
-                        Err(err) => warn!("could not move '{file_path}' to '{new_path}' - {err}"),
-                    }
+                if allow_rename_or_sort {
+                    sort_file(args, &file_path, SortOption::Warning);
                 }
             }
         }
