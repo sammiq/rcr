@@ -83,6 +83,10 @@ struct Cli {
     #[clap(short, long, action = clap::ArgAction::Count, env = "RCR_VERBOSE")]
     verbose: u8,
 
+    /// which warning items to print after scan
+    #[clap(short, long, value_enum, default_value_t = OutputFilter::All, env = "RCR_MISSING")]
+    warning: OutputFilter,
+
     /// number of threads to use for processing,
     /// may decrease performance if I/O bound
     #[clap(short, long, default_value_t = 1, verbatim_doc_comment, env = "RCR_WORKERS")]
@@ -329,10 +333,10 @@ fn process_rom_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) 
 
 fn process_zip_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) -> GameMap<'x> {
     //use a b-tree map for natural sorting
-    let mut found_games = BTreeMap::new();
+    let mut found_games = GameMap::new();
 
     if let Err(error) = hash_zip_file_contents(file_path, args.method).map(|hashed| {
-        let mut unique_games = BTreeSet::new();
+        let mut unique_games = NodeSet::new();
 
         for (file, hash_string) in &hashed {
             let mut inner_path = Utf8PathBuf::from(&file_path);
@@ -351,76 +355,87 @@ fn process_zip_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) 
             }
         }
 
-        let full_games: BTreeSet<Node> = unique_games
-            .extract_if(.., |game_node| {
-                let rom_count = game_node.children().filter(is_rom_node).count();
-                rom_count == found_games[game_node].len()
-            })
-            .collect();
-        let exact_matches = !full_games.is_empty();
-        if exact_matches {
-            //only keep the exact matches, the others are irrelevant
-            unique_games = full_games;
-            found_games.retain(|game_node, _| unique_games.contains(game_node));
-        } else {
-            //check whether the zip file is named after a game, and treat it like that game if so.
-            let zip_name = file_path.file_name().expect("zip path should contain the file name");
-            if let Some(game_node) = df_xml
-                .root_element()
-                .children()
-                .find(|node| is_game_node(node) && get_name_from_node(node) == Some(zip_name))
-            {
-                //we should treat this as the desired game and not rely on the hash information
-                if unique_games
-                    .iter()
-                    .any(|game_node| get_name_from_node(game_node) == Some(zip_name))
-                {
-                    //contains the game already, so remove the others
-                    unique_games.retain(|game_node| get_name_from_node(game_node) == Some(zip_name));
-                    found_games.retain(|game_node, _| unique_games.contains(game_node));
-                } else {
-                    //doesn't contain the game to add a blank entry for it
-                    unique_games.clear();
-                    unique_games.insert(game_node);
-                    found_games.clear();
-                    found_games.insert(game_node, BTreeSet::new());
-                }
-            }
-        }
-
-        if !args.any_contents {
-            //ignore partial matches if the count of files inside the zip is too small
-            let full_games: BTreeSet<Node> = unique_games
-                .extract_if(.., |game_node| {
-                    let rom_count = game_node.children().filter(is_rom_node).count();
-                    rom_count <= hashed.len()
-                })
-                .collect();
-            if !full_games.is_empty() {
-                unique_games = full_games;
-                found_games.retain(|game_node, _| unique_games.contains(game_node));
-            }
-
-            //finally if we have lots of matches with 1 file and there are more than a couple of files in the rom, discard them
-            let partials = found_games
-                .iter()
-                .filter(|(game_node, rom_nodes)| {
-                    let rom_count = game_node.children().filter(is_rom_node).count();
-                    rom_count > 2 && rom_nodes.len() == 1
-                })
-                .count();
-            if partials == found_games.len() {
-                unique_games.clear();
-                found_games.clear();
-            }
-        }
-
+        let exact_matches = filter_zip_matches(args, df_xml, file_path, hashed.len(), &mut found_games, &mut unique_games);
         report_zip_file(args, file_path, &unique_games, exact_matches)
     }) {
         warn!("could not process '{file_path}', error was '{error}'")
     }
 
     found_games
+}
+
+fn filter_zip_matches<'x>(
+    args: &Cli,
+    df_xml: &'x Document<'_>,
+    file_path: &Utf8Path,
+    num_files: usize,
+    found_games: &mut GameMap<'x>,
+    unique_games: &mut NodeSet<'x>,
+) -> bool {
+    let full_games: BTreeSet<Node> = unique_games
+        .extract_if(.., |game_node| {
+            let rom_count = game_node.children().filter(is_rom_node).count();
+            rom_count == found_games[game_node].len()
+        })
+        .collect();
+    let exact_matches = !full_games.is_empty();
+    if exact_matches {
+        //only keep the exact matches, the others are irrelevant
+        *unique_games = full_games;
+        found_games.retain(|game_node, _| unique_games.contains(game_node));
+    } else {
+        //check whether the zip file is named after a game, and treat it like that game if so.
+        let zip_name = file_path.file_name().expect("zip path should contain the file name");
+        if let Some(game_node) = df_xml
+            .root_element()
+            .children()
+            .find(|node| is_game_node(node) && get_name_from_node(node) == Some(zip_name))
+        {
+            //we should treat this as the desired game and not rely on the hash information
+            if unique_games
+                .iter()
+                .any(|game_node| get_name_from_node(game_node) == Some(zip_name))
+            {
+                //contains the game already, so remove the others
+                unique_games.retain(|game_node| get_name_from_node(game_node) == Some(zip_name));
+                found_games.retain(|game_node, _| unique_games.contains(game_node));
+            } else {
+                //doesn't contain the game to add a blank entry for it
+                unique_games.clear();
+                unique_games.insert(game_node);
+                found_games.clear();
+                found_games.insert(game_node, BTreeSet::new());
+            }
+        }
+    }
+
+    if !args.any_contents {
+        //ignore partial matches if the count of files inside the zip is too small
+        let full_games: BTreeSet<Node> = unique_games
+            .extract_if(.., |game_node| {
+                let rom_count = game_node.children().filter(is_rom_node).count();
+                rom_count <= num_files
+            })
+            .collect();
+        if !full_games.is_empty() {
+            *unique_games = full_games;
+            found_games.retain(|game_node, _| unique_games.contains(game_node));
+        }
+
+        //finally if we have lots of matches with 1 file and there are more than a couple of files in the rom, discard them
+        let partials = found_games
+            .iter()
+            .filter(|(game_node, rom_nodes)| {
+                let rom_count = game_node.children().filter(is_rom_node).count();
+                rom_count > 2 && rom_nodes.len() == 1
+            })
+            .count();
+        if partials == found_games.len() {
+            unique_games.clear();
+            found_games.clear();
+        }
+    }
+    exact_matches
 }
 
 fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &BTreeSet<Node>, exact_matches: bool) -> Result<()> {
@@ -430,7 +445,7 @@ fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &BTreeSet<Nod
             if args.missing == OutputFilter::Files || args.missing == OutputFilter::All {
                 println!("[MISS] ---------------------------------------- {file_path} - unknown, no match");
             }
-            sort_file(args, file_path, SortOption::Unknown);
+            sort_file(args, file_path, SortOption::Unknown, true);
         }
         1 => {
             let game_node = unique_games.iter().next().expect("should never fail as we checked length");
@@ -443,11 +458,16 @@ fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &BTreeSet<Nod
                 file_path.to_path_buf()
             };
 
-            if exact_matches {
-                sort_file(args, &current_file_path, SortOption::Matched);
-            } else {
-                sort_file(args, &current_file_path, SortOption::Warning);
-            }
+            sort_file(
+                args,
+                &current_file_path,
+                if exact_matches {
+                    SortOption::Matched
+                } else {
+                    SortOption::Warning
+                },
+                true,
+            );
         }
         _ => {
             info!("zip file '{file_path}' seems to match multiple games, could be one of:");
@@ -456,7 +476,7 @@ fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &BTreeSet<Nod
                 .flat_map(get_name_from_node)
                 .for_each(|name| info!("       {name}"));
 
-            sort_file(args, file_path, SortOption::Warning);
+            sort_file(args, file_path, SortOption::Warning, true);
         }
     }
     Ok(())
@@ -533,8 +553,8 @@ fn match_rom_filename(node: &Node, file_name: &str, ignore_suffix: bool) -> bool
         .unwrap_or(false)
 }
 
-fn sort_file(args: &Cli, file_path: &Utf8Path, sort: SortOption) {
-    if args.sort == sort || args.sort == SortOption::All {
+fn sort_file(args: &Cli, file_path: &Utf8Path, sort: SortOption, allow_sort: bool) {
+    if allow_sort && args.sort == sort || args.sort == SortOption::All {
         let subdir = match sort {
             SortOption::Unknown => "unknown",
             SortOption::Matched => "matched",
@@ -549,12 +569,42 @@ fn sort_file(args: &Cli, file_path: &Utf8Path, sort: SortOption) {
     }
 }
 
+enum MatchType {
+    Matched(Option<String>),
+    Warning(String),
+    Unknown,
+}
+
+fn print_file_hash(args: &Cli, hash: &str, file_path: &Utf8Path, match_type: MatchType) {
+    match match_type {
+        MatchType::Matched(old_name) => {
+            if args.found == OutputFilter::Files || args.found == OutputFilter::All {
+                if let Some(old_name) = old_name {
+                    println!("[ OK ] {hash} {file_path} (renamed from {old_name}");
+                } else {
+                    println!("[ OK ] {hash} {file_path} ");
+                }
+            }
+        }
+        MatchType::Warning(actual_name) => {
+            if args.warning == OutputFilter::Files || args.warning == OutputFilter::All {
+                println!("[WARN] {hash} {file_path}  - misnamed, should be '{actual_name}'");
+            }
+        }
+        MatchType::Unknown => {
+            if args.missing == OutputFilter::Files || args.missing == OutputFilter::All {
+                println!("[MISS] {hash} {file_path} - unknown, no match");
+            }
+        }
+    }
+}
+
 fn check_file<'a>(
     args: &Cli,
     df_xml: &'a Document,
     file_path: &Utf8Path,
     hash: &str,
-    allow_rename_or_sort: bool,
+    allow_move: bool,
 ) -> Result<Vec<Node<'a, 'a>>> {
     let file_name = file_path.file_name().context("file path should always have a file name")?;
     debug!("hash for '{file_path}' ('{file_name}') = {hash}");
@@ -563,12 +613,8 @@ fn check_file<'a>(
     match found_nodes.len() {
         0 => {
             trace!("found no matches, the file appears to be unknown");
-            if args.missing == OutputFilter::Files || args.missing == OutputFilter::All {
-                println!("[MISS] {hash} {file_path} - unknown, no match");
-            }
-            if allow_rename_or_sort {
-                sort_file(args, file_path, SortOption::Unknown);
-            }
+            print_file_hash(args, hash, file_path, MatchType::Unknown);
+            sort_file(args, file_path, SortOption::Unknown, allow_move);
         }
         1 => {
             trace!("found single match, will use this one");
@@ -576,34 +622,24 @@ fn check_file<'a>(
             let node_name = get_name_from_node(node).context("rom nodes in reference dat file should always have a name")?;
 
             if match_filename(file_name, node_name, args.ignore_suffix) {
-                if args.found == OutputFilter::Files || args.found == OutputFilter::All {
-                    println!("[ OK ] {hash} {file_path}");
-                }
-                if allow_rename_or_sort {
-                    sort_file(args, file_path, SortOption::Matched);
-                }
-            } else if allow_rename_or_sort {
-                if args.rename {
-                    debug!("renaming {file_path} to {node_name}");
-                    match rename_file_if_possible(file_path, node_name) {
-                        Ok(new_path) => {
-                            if args.found == OutputFilter::Files || args.found == OutputFilter::All {
-                                println!("[ OK ] {hash} {new_path} (renamed from {file_path}");
-                            }
-                            sort_file(args, file_path, SortOption::Matched);
-                        }
-                        Err(err) => {
-                            warn!("could not rename '{file_path}' to '{node_name}' - {err}");
-                            println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
-                            sort_file(args, &file_path, SortOption::Warning);
-                        }
+                print_file_hash(args, hash, file_path, MatchType::Matched(Option::None));
+                sort_file(args, file_path, SortOption::Matched, allow_move);
+            } else if allow_move && args.rename {
+                debug!("renaming {file_path} to {node_name}");
+                match rename_file_if_possible(file_path, node_name) {
+                    Ok(new_path) => {
+                        print_file_hash(args, hash, &new_path, MatchType::Matched(Some(file_path.to_string())));
+                        sort_file(args, file_path, SortOption::Matched, allow_move);
                     }
-                } else {
-                    println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
-                    sort_file(args, &file_path, SortOption::Warning);
+                    Err(err) => {
+                        warn!("could not rename '{file_path}' to '{node_name}' - {err}");
+                        print_file_hash(args, hash, file_path, MatchType::Warning(node_name.into()));
+                        sort_file(args, &file_path, SortOption::Warning, allow_move);
+                    }
                 }
             } else {
-                println!("[WARN] {hash} {file_path}  - misnamed, should be '{node_name}'");
+                print_file_hash(args, hash, file_path, MatchType::Warning(node_name.into()));
+                sort_file(args, &file_path, SortOption::Warning, allow_move);
             }
         }
         _ => {
@@ -614,23 +650,19 @@ fn check_file<'a>(
             {
                 trace!("found at least one match for name, the file is ok, remove other nodes");
                 found_nodes.retain(|node| match_rom_filename(node, file_name, args.ignore_suffix));
-                if args.found == OutputFilter::Files || args.found == OutputFilter::All {
-                    println!("[ OK ] {hash} {file_path}");
-                }
-                if allow_rename_or_sort {
-                    sort_file(args, file_path, SortOption::Matched);
-                }
+                print_file_hash(args, hash, file_path, MatchType::Matched(Option::None));
+                sort_file(args, file_path, SortOption::Matched, allow_move);
             } else {
-                trace!("found at least no matches for name, the file is misnamed but could be multiple options");
-                println!("[WARN] {hash} {file_path}  - multiple matches, could be one of:");
-                found_nodes
-                    .iter()
-                    .flat_map(get_name_from_node)
-                    .for_each(|name| println!("       {hash} {name}"));
-
-                if allow_rename_or_sort {
-                    sort_file(args, &file_path, SortOption::Warning);
+                trace!("found no matches for name, the file is misnamed but could be multiple options");
+                if args.warning == OutputFilter::Files || args.warning == OutputFilter::All {
+                    println!("[WARN] {hash} {file_path}  - multiple matches, could be one of:");
+                    found_nodes
+                        .iter()
+                        .flat_map(get_name_from_node)
+                        .for_each(|name| println!("       {hash} {name}"));
                 }
+
+                sort_file(args, &file_path, SortOption::Warning, allow_move);
             }
         }
     }
