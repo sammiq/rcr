@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use digest::Digest;
 use md5::Md5;
@@ -8,6 +8,14 @@ use std::fs::File;
 use std::io::{copy, BufReader, Read, Write};
 #[cfg(windows)]
 use std::os::windows::prelude::*;
+
+pub fn move_file_if_possible(in_file: &Utf8Path, out_path: &Utf8Path) -> Result<Utf8PathBuf> {
+    let file_name = in_file.file_name().context("expected a filename to be passed in argument")?;
+    let mut out_file = out_path.to_path_buf();
+    out_file.push(file_name);
+    std::fs::rename(in_file, &out_file)?;
+    Ok(out_file)
+}
 
 pub fn rename_file_if_possible(in_file: &Utf8Path, file_name: &str) -> Result<Utf8PathBuf> {
     let mut out_file = Utf8PathBuf::from(in_file);
