@@ -1,4 +1,5 @@
 # .github/workflows/new-release.yml
+name: Release
 
 on: workflow_dispatch
 # currently manual only for testing purposes
@@ -33,16 +34,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-      - run: cargo build --locked --release --features memmap2 --target ${{ matrix.platform.target }}
+          targets: ${{ matrix.target }}
+      - run: cargo build --locked --release --features memmap2 --target ${{ matrix.target }}
       - run: |
-          cd target/${{ matrix.platform.target }}/release
-          ARCHIVE=rcr_${{ matrix.platform.target }}.zip
-          zip -9r ${ARCHIVE} ${{ matrix.platform.binary }}
-          printf "%s %s" "$(sha256sum "${ARCHIVE}" | cut -d ' ' -f 1)" "$FILE_NAME" > "${ARCHIVE}.sha256sum"
+          cd target/${{ matrix.target }}/release
+          ARCHIVE=rcr_${{ matrix.target }}.zip
+          zip -9r ${ARCHIVE} ${{ matrix.binary }}
+          printf "%s %s" "$(sha256sum "${ARCHIVE}" | cut -d ' ' -f 1)" "$ARCHIVE" > "${ARCHIVE}.sha256sum"
           cd -
       # do this for the moment for testing
       - name: Publish release artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: rcr_${{ matrix.platform.build }}
-          path: "target/${{ matrix.platform.target }}/release/rcr_*"
+          name: rcr_${{ matrix.build }}
+          path: "target/${{ matrix.target }}/release/rcr_*"
