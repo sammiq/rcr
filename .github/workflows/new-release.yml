@@ -30,20 +30,33 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+      - name: Install musl-tools on Linux
+        if: matrix.build == 'linux'
+        run: apt-get update --yes && apt-get install --yes musl-tools
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-      - run: cargo build --locked --release --features memmap2 --target ${{ matrix.target }}
-      - run: |
+      - name: Build artifacts
+        run: cargo build --locked --release --features memmap2 --target ${{ matrix.target }}
+      - name: Package artifacts
+        if: matrix.build != 'windows'
+        run: |
           cd target/${{ matrix.target }}/release
           ARCHIVE=rcr_${{ matrix.target }}.zip
           zip -9r ${ARCHIVE} ${{ matrix.binary }}
           printf "%s %s" "$(sha256sum "${ARCHIVE}" | cut -d ' ' -f 1)" "$ARCHIVE" > "${ARCHIVE}.sha256sum"
-          cd -
+      - name: Package artifacts
+        if: matrix.build == 'windows'
+        shell: pwsh
+        run: |
+          cd target/${{ matrix.target }}/release
+          $ARCHIVE = "rcr_${{ matrix.target }}.zip"
+          Compress-Archive -Path ${{ matrix.binary }} -DestinationPath $ARCHIVE -CompressionLevel Optimal
+          (Get-FileHash $ARCHIVE -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii -NoNewline "$ARCHIVE.sha256sum"
       # do this for the moment for testing
-      - name: Publish release artifacts
+      - name: Publish artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rcr_${{ matrix.build }}
