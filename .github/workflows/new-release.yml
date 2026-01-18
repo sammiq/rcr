@@ -54,7 +54,8 @@ jobs:
           cd target/${{ matrix.target }}/release
           $ARCHIVE = "rcr_${{ matrix.target }}.zip"
           Compress-Archive -Path ${{ matrix.binary }} -DestinationPath $ARCHIVE -CompressionLevel Optimal
-          (Get-FileHash $ARCHIVE -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii -NoNewline "$ARCHIVE.sha256sum"
+          $hash = (Get-FileHash $ARCHIVE -Algorithm SHA256).Hash.ToLower()
+          "$hash $ARCHIVE" | Out-File -Encoding ascii -NoNewline "$ARCHIVE.sha256sum"
       # do this for the moment for testing
       - name: Publish artifacts
         uses: actions/upload-artifact@v4
