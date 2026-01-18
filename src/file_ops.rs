@@ -9,8 +9,12 @@ use std::io::{copy, BufReader, Read, Write};
 #[cfg(windows)]
 use std::os::windows::prelude::*;
 
+pub fn expect_file_name(file_path: &Utf8Path) -> Result<&str> {
+    file_path.file_name().context("expected a filename to be passed in argument")
+}
+
 pub fn move_file_if_possible(in_file: &Utf8Path, out_path: &Utf8Path) -> Result<Utf8PathBuf> {
-    let file_name = in_file.file_name().context("expected a filename to be passed in argument")?;
+    let file_name = expect_file_name(in_file)?;
     let mut out_file = out_path.to_path_buf();
     out_file.push(file_name);
     std::fs::rename(in_file, &out_file)?;
@@ -52,12 +56,12 @@ pub fn reader_for_filename(file: &Utf8Path) -> Result<BufReader<File>> {
 pub fn is_hidden_file(file: &Utf8Path) -> bool {
     file.metadata()
         .map(|metadata| metadata.file_attributes() & 0x00000002 != 0)
-        .unwrap_or(false)
+        .unwrap_or_default()
 }
 
 #[cfg(not(windows))]
 pub fn is_hidden_file(file: &Utf8Path) -> bool {
-    file.file_name().map(|filename| filename.starts_with('.')).unwrap_or(false)
+    file.file_name().map(|filename| filename.starts_with('.')).unwrap_or_default()
 }
 
 pub fn match_filename(file_name: &str, rom_name: &str, ignore_suffix: bool) -> bool {
