@@ -1,0 +1,48 @@
+# .github/workflows/new-release.yml
+
+on: workflow_dispatch
+# currently manual only for testing purposes
+#  release:
+#    types: [created]
+
+jobs:
+  new_release:
+    name: release ${{ matrix.build }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [linux, windows, mac]
+        include:
+          - build: linux
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            binary: rcr
+          - build: windows
+            target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: rcr.exe
+          - build: mac
+            target: x86_64-apple-darwin
+            os: macos-latest
+            binary: rcr
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - run: cargo build --locked --release --features memmap2 --target ${{ matrix.platform.target }}
+      - run: |
+          cd target/${{ matrix.platform.target }}/release
+          ARCHIVE=rcr_${{ matrix.platform.target }}.zip
+          zip -9r ${ARCHIVE} ${{ matrix.platform.binary }}
+          printf "%s %s" "$(sha256sum "${ARCHIVE}" | cut -d ' ' -f 1)" "$FILE_NAME" > "${ARCHIVE}.sha256sum"
+          cd -
+      # do this for the moment for testing
+      - name: Publish release artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: rcr_${{ matrix.platform.build }}
+          path: "target/${{ matrix.platform.target }}/release/rcr_*"
