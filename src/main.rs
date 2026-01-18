@@ -59,7 +59,7 @@ struct Cli {
     #[clap(short('F'), long, verbatim_doc_comment, env = "RCR_FAST")]
     fast: bool,
 
-    /// which found and matching items to print after scan
+    /// filter for printing information on found/matched items
     #[clap(short, long, value_enum, default_value_t = OutputFilter::All, env = "RCR_FOUND")]
     found: OutputFilter,
 
@@ -71,7 +71,7 @@ struct Cli {
     #[clap(short('M'), long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment, env = "RCR_METHOD")]
     method: MatchMethod,
 
-    /// which missing items to print after scan
+    /// filter for printing information on missing/unknown items
     #[clap(short, long, value_enum, default_value_t = OutputFilter::All, env = "RCR_MISSING")]
     missing: OutputFilter,
 
@@ -95,7 +95,7 @@ struct Cli {
     #[clap(short, long, action = clap::ArgAction::Count, env = "RCR_VERBOSE")]
     verbose: u8,
 
-    /// which warning items to print after scan
+    /// filter for printing information on misnamed, partial and ambiguous items
     #[clap(short, long, value_enum, default_value_t = OutputFilter::All, env = "RCR_WARNING")]
     warning: OutputFilter,
 
@@ -658,7 +658,7 @@ fn print_file_hash(args: &Cli, hash: &str, file_path: &Utf8Path, match_type: Mat
             println_if!(args.warning.output_files(), "[WARN] {hash} {file_path}  - misnamed, should be '{actual_name}'");
         }
         MatchType::Unknown => {
-            println_if!(args.missing.output_files(), "[UNK ] {hash} {file_path} - unknown, no match");
+            println_if!(args.missing.output_files(), "[MISS] {hash} {file_path} - unknown, no match");
         }
     }
 }
@@ -739,14 +739,14 @@ fn check_game(args: &Cli, game: &Node, found_roms: &NodeSet) -> Result<()> {
     if found_roms.len() == all_roms.len() {
         println_if!(args.found.output_sets(), "[ OK ]  {game_name}");
     } else if args.warning.output_sets() {
-        println!("[PART]  {game_name}");
+        println!("[WARN]  {game_name} - is missing files");
         if args.missing.output_files() {
             all_roms.difference(found_roms).try_for_each::<_, Result<()>>(|missing| {
                 let missing_name =
                     get_name_from_node(missing).context("rom nodes in reference dat file should always have a name")?;
                 let missing_hash = get_hash_from_rom_node(missing, args.method.as_str())
                     .context("rom nodes in reference dat file should have a hash")?;
-                println!("[MISS]  {game_name} - {missing_hash} {missing_name}");
+                println!("        {game_name} - {missing_hash} {missing_name}");
                 Ok(())
             })?;
         }
