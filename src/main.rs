@@ -17,10 +17,19 @@ use std::fs::File;
 type NodeSet<'x> = BTreeSet<Node<'x, 'x>>;
 type GameMap<'x> = BTreeMap<Node<'x, 'x>, NodeSet<'x>>;
 
+//simple macro to conditionally println
+macro_rules! println_if {
+    ($cond:expr, $($arg:tt)*) => {
+        if $cond {
+            println!($($arg)*);
+        }
+    };
+}
+
 #[derive(Debug, Parser)]
 #[clap(version, about, long_about = None)]
 struct Cli {
-     /// count any matches in a zip file as a match, otherwise
+    /// count any matches in a zip file as a match, otherwise
     /// the file count must match for a partial match
     #[clap(short, long, verbatim_doc_comment, env = "RCR_ANY_CONTENTS")]
     any_contents: bool,
@@ -84,7 +93,7 @@ struct Cli {
     verbose: u8,
 
     /// which warning items to print after scan
-    #[clap(short, long, value_enum, default_value_t = OutputFilter::All, env = "RCR_MISSING")]
+    #[clap(short, long, value_enum, default_value_t = OutputFilter::All, env = "RCR_WARNING")]
     warning: OutputFilter,
 
     /// number of threads to use for processing,
@@ -103,6 +112,16 @@ enum OutputFilter {
     Sets,
     All,
     None,
+}
+
+impl OutputFilter {
+    fn output_files(&self) -> bool {
+        *self == OutputFilter::Files || *self == OutputFilter::All
+    }
+
+    fn output_sets(&self) -> bool {
+        *self == OutputFilter::Sets || *self == OutputFilter::All
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
@@ -144,7 +163,7 @@ const EMPTY_TREE: GameMap = GameMap::new();
 fn main() -> Result<()> {
     simple_logger::SimpleLogger::new()
         .init()
-        .expect("should be able to initialize the logger");
+        .context("failed to initialize the logger")?;
 
     //load .env file from current directory only
     if let Ok(mut path) = std::env::current_dir() {
@@ -182,7 +201,7 @@ fn main() -> Result<()> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.workers as usize)
         .build_global()
-        .expect("should be able to initialize the thread pool");
+        .context("failed to initialize the thread pool")?;
     info!("using {} threads for processing", args.workers);
 
     trace!("reading dat file {}", args.dat_file);
@@ -223,7 +242,7 @@ fn main() -> Result<()> {
 
     let games = df_xml.root_element().children().filter(is_game_node);
     let mut total_games = 0usize;
-    if args.missing == OutputFilter::Sets || args.missing == OutputFilter::All {
+    if args.missing.output_sets() {
         let found_names: BTreeSet<&str> = found_games
             .keys()
             .map(|k| get_name_from_node(k).unwrap_or_default())
@@ -247,10 +266,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn merge_game_maps<'x>(
-    mut acc: GameMap<'x>,
-    e: GameMap<'x>,
-) -> GameMap<'x> {
+fn merge_game_maps<'x>(mut acc: GameMap<'x>, e: GameMap<'x>) -> GameMap<'x> {
     for (k, v) in e {
         acc.entry(k).or_default().extend(v.iter());
     }
@@ -277,12 +293,10 @@ fn process_file<'x>(args: &Cli, df_xml: &'x Document, exclusions: &BTreeSet<Stri
         EMPTY_TREE
     } else if file_path.is_dir() {
         if args.recurse {
-            match file_path
-                .read_dir_utf8()
-                .expect("could not read directory")
-                .map(|res| res.map(|e| e.path().to_owned()))
-                .collect::<Result<Vec<_>, std::io::Error>>()
-            {
+            match file_path.read_dir_utf8().and_then(|dir| {
+                dir.map(|res| res.map(|e| e.path().to_owned()))
+                    .collect::<Result<Vec<_>, std::io::Error>>()
+            }) {
                 Ok(entries) => entries
                     .par_iter()
                     .map(|path| process_file(args, df_xml, exclusions, path))
@@ -299,7 +313,7 @@ fn process_file<'x>(args: &Cli, df_xml: &'x Document, exclusions: &BTreeSet<Stri
     } else if !file_path.is_file() {
         warn!("{file_path} is not a regular file, skipping it");
         EMPTY_TREE
-    } else if file_path.extension().map(|ext| exclusions.contains(ext)).unwrap_or(false) {
+    } else if file_path.extension().map(|ext| exclusions.contains(ext)).unwrap_or_default() {
         info!("{file_path} has an excluded extension, skipping it");
         EMPTY_TREE
     } else if file_path.extension() == Some("zip") {
@@ -321,7 +335,7 @@ fn process_rom_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) 
             for rom_node in found_rom_nodes {
                 if let Some(game_node) = rom_node.parent().filter(is_game_node) {
                     //use a b-tree set for natural sorting
-                    found_games.entry(game_node).or_insert_with(NodeSet::new).insert(rom_node);
+                    found_games.entry(game_node).or_default().insert(rom_node);
                 };
             }
         }
@@ -347,7 +361,7 @@ fn process_zip_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) 
                         if let Some(game_node) = rom_node.parent().filter(is_game_node) {
                             unique_games.insert(game_node);
                             //use a b-tree set for natural sorting
-                            found_games.entry(game_node).or_insert_with(NodeSet::new).insert(rom_node);
+                            found_games.entry(game_node).or_default().insert(rom_node);
                         };
                     }
                 }
@@ -384,8 +398,50 @@ fn filter_zip_matches<'x>(
         *unique_games = full_games;
         found_games.retain(|game_node, _| unique_games.contains(game_node));
     } else {
-        //check whether the zip file is named after a game, and treat it like that game if so.
-        let zip_name = file_path.file_name().expect("zip path should contain the file name");
+        filter_zip_matches_by_name(df_xml, file_path, found_games, unique_games);
+    }
+
+    if !args.any_contents {
+        filter_zip_matches_by_count(num_files, found_games, unique_games);
+    }
+    exact_matches
+}
+
+fn filter_zip_matches_by_count(num_files: usize, found_games: &mut GameMap, unique_games: &mut NodeSet) {
+    //ignore partial matches if the count of files inside the zip is too small
+    let full_games: NodeSet = unique_games
+        .extract_if(.., |game_node| {
+            let rom_count = game_node.children().filter(is_rom_node).count();
+            rom_count <= num_files
+        })
+        .collect();
+    if !full_games.is_empty() {
+        *unique_games = full_games;
+        found_games.retain(|game_node, _| unique_games.contains(game_node));
+    }
+
+    //finally if we have lots of matches with 1 file and there are more than a couple of files in the rom, discard them
+    let partials = found_games
+        .iter()
+        .filter(|(game_node, rom_nodes)| {
+            let rom_count = game_node.children().filter(is_rom_node).count();
+            rom_count > 2 && rom_nodes.len() == 1
+        })
+        .count();
+    if partials == found_games.len() {
+        unique_games.clear();
+        found_games.clear();
+    }
+}
+
+fn filter_zip_matches_by_name<'x>(
+    df_xml: &'x Document<'_>,
+    file_path: &Utf8Path,
+    found_games: &mut GameMap<'x>,
+    unique_games: &mut NodeSet<'x>,
+) {
+    //check whether the zip file is named after a game, and treat it like that game if so.
+    if let Ok(zip_name) = expect_file_name(file_path) {
         if let Some(game_node) = df_xml
             .root_element()
             .children()
@@ -408,47 +464,20 @@ fn filter_zip_matches<'x>(
             }
         }
     }
-
-    if !args.any_contents {
-        //ignore partial matches if the count of files inside the zip is too small
-        let full_games: NodeSet = unique_games
-            .extract_if(.., |game_node| {
-                let rom_count = game_node.children().filter(is_rom_node).count();
-                rom_count <= num_files
-            })
-            .collect();
-        if !full_games.is_empty() {
-            *unique_games = full_games;
-            found_games.retain(|game_node, _| unique_games.contains(game_node));
-        }
-
-        //finally if we have lots of matches with 1 file and there are more than a couple of files in the rom, discard them
-        let partials = found_games
-            .iter()
-            .filter(|(game_node, rom_nodes)| {
-                let rom_count = game_node.children().filter(is_rom_node).count();
-                rom_count > 2 && rom_nodes.len() == 1
-            })
-            .count();
-        if partials == found_games.len() {
-            unique_games.clear();
-            found_games.clear();
-        }
-    }
-    exact_matches
 }
 
 fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &NodeSet, exact_matches: bool) -> Result<()> {
     match unique_games.len() {
         0 => {
             info!("zip file '{file_path}' seems to match no games");
-            if args.missing == OutputFilter::Files || args.missing == OutputFilter::All {
-                println!("[MISS] ---------------------------------------- {file_path} - unknown, no match");
-            }
+            println_if!(
+                args.missing.output_files(),
+                "[MISS] ---------------------------------------- {file_path} - unknown, no match"
+            );
             sort_file(args, file_path, SortOption::Unknown, true);
         }
         1 => {
-            let game_node = unique_games.iter().next().expect("should never fail as we checked length");
+            let game_node = unique_games.first().expect("should never fail as we checked length");
             let game_name = get_name_from_node(game_node).context("game nodes in reference dat file should always have a name")?;
             info!("zip file '{file_path}' matches {game_name}");
 
@@ -483,7 +512,7 @@ fn report_zip_file(args: &Cli, file_path: &Utf8Path, unique_games: &NodeSet, exa
 }
 
 fn rename_to_game(file_path: &Utf8Path, game_name: &str) -> Result<Utf8PathBuf> {
-    let file_name = file_path.file_name().context("file path should always have a file name")?;
+    let file_name = expect_file_name(file_path)?;
     let new_file_name = match file_path.extension() {
         Some(ext) => game_name.to_string() + "." + ext,
         None => game_name.to_string(),
@@ -550,7 +579,7 @@ fn hash_zip_file_contents(file: &Utf8Path, method: MatchMethod) -> Result<BTreeM
 fn match_rom_filename(node: &Node, file_name: &str, ignore_suffix: bool) -> bool {
     get_name_from_node(node)
         .map(|rom_name| match_filename(file_name, rom_name, ignore_suffix))
-        .unwrap_or(false)
+        .unwrap_or_default()
 }
 
 fn sort_file(args: &Cli, file_path: &Utf8Path, sort: SortOption, allow_sort: bool) {
@@ -578,23 +607,17 @@ enum MatchType {
 fn print_file_hash(args: &Cli, hash: &str, file_path: &Utf8Path, match_type: MatchType) {
     match match_type {
         MatchType::Matched(old_name) => {
-            if args.found == OutputFilter::Files || args.found == OutputFilter::All {
-                if let Some(old_name) = old_name {
-                    println!("[ OK ] {hash} {file_path} (renamed from {old_name}");
-                } else {
-                    println!("[ OK ] {hash} {file_path} ");
-                }
+            if let Some(old_name) = old_name {
+                println_if!(args.found.output_files(), "[ OK ] {hash} {file_path} (renamed from {old_name}");
+            } else {
+                println_if!(args.found.output_files(), "[ OK ] {hash} {file_path} ");
             }
         }
         MatchType::Warning(actual_name) => {
-            if args.warning == OutputFilter::Files || args.warning == OutputFilter::All {
-                println!("[WARN] {hash} {file_path}  - misnamed, should be '{actual_name}'");
-            }
+            println_if!(args.warning.output_files(), "[WARN] {hash} {file_path}  - misnamed, should be '{actual_name}'");
         }
         MatchType::Unknown => {
-            if args.missing == OutputFilter::Files || args.missing == OutputFilter::All {
-                println!("[MISS] {hash} {file_path} - unknown, no match");
-            }
+            println_if!(args.missing.output_files(), "[UNK ] {hash} {file_path} - unknown, no match");
         }
     }
 }
@@ -606,7 +629,7 @@ fn check_file<'a>(
     hash: &str,
     allow_move: bool,
 ) -> Result<Vec<Node<'a, 'a>>> {
-    let file_name = file_path.file_name().context("file path should always have a file name")?;
+    let file_name = expect_file_name(file_path)?;
     debug!("hash for '{file_path}' ('{file_name}') = {hash}");
     let mut found_nodes = find_rom_nodes_by_hash(df_xml, args.method.as_str(), hash, args.fast);
     debug!("found nodes by hash {:?}", found_nodes);
@@ -633,13 +656,13 @@ fn check_file<'a>(
                     }
                     Err(err) => {
                         warn!("could not rename '{file_path}' to '{node_name}' - {err}");
-                        print_file_hash(args, hash, file_path, MatchType::Warning(node_name.into()));
-                        sort_file(args, &file_path, SortOption::Warning, allow_move);
+                        print_file_hash(args, hash, file_path, MatchType::Warning(node_name.to_string()));
+                        sort_file(args, file_path, SortOption::Warning, allow_move);
                     }
                 }
             } else {
-                print_file_hash(args, hash, file_path, MatchType::Warning(node_name.into()));
-                sort_file(args, &file_path, SortOption::Warning, allow_move);
+                print_file_hash(args, hash, file_path, MatchType::Warning(node_name.to_string()));
+                sort_file(args, file_path, SortOption::Warning, allow_move);
             }
         }
         _ => {
@@ -654,7 +677,7 @@ fn check_file<'a>(
                 sort_file(args, file_path, SortOption::Matched, allow_move);
             } else {
                 trace!("found no matches for name, the file is misnamed but could be multiple options");
-                if args.warning == OutputFilter::Files || args.warning == OutputFilter::All {
+                if args.warning.output_files() {
                     println!("[WARN] {hash} {file_path}  - multiple matches, could be one of:");
                     found_nodes
                         .iter()
@@ -662,7 +685,7 @@ fn check_file<'a>(
                         .for_each(|name| println!("       {hash} {name}"));
                 }
 
-                sort_file(args, &file_path, SortOption::Warning, allow_move);
+                sort_file(args, file_path, SortOption::Warning, allow_move);
             }
         }
     }
@@ -673,23 +696,22 @@ fn check_game(args: &Cli, game: &Node, found_roms: &NodeSet) -> Result<()> {
     let all_roms: NodeSet = game.children().filter(is_rom_node).collect();
     let game_name = get_name_from_node(game).context("game nodes in reference dat file should always have a name")?;
     if found_roms.len() == all_roms.len() {
-        println!("[ OK ]  {game_name}");
-        Ok(())
-    } else {
+        println_if!(args.found.output_sets(), "[ OK ]  {game_name}");
+    } else if args.warning.output_sets() {
         println!("[PART]  {game_name}");
-        if args.missing == OutputFilter::Files || args.missing == OutputFilter::All {
-            all_roms.difference(found_roms).try_for_each(|missing| {
+        if args.missing.output_files() {
+            all_roms.difference(found_roms).try_for_each::<_, Result<()>>(|missing| {
                 let missing_name =
                     get_name_from_node(missing).context("rom nodes in reference dat file should always have a name")?;
                 let missing_hash = get_hash_from_rom_node(missing, args.method.as_str())
                     .context("rom nodes in reference dat file should have a hash")?;
-                println!("  [MISS]  {missing_hash} {missing_name}");
+                println!("[MISS]  {game_name} - {missing_hash} {missing_name}");
                 Ok(())
-            })
-        } else {
-            Ok(())
+            })?;
         }
     }
+
+    Ok(())
 }
 
 fn set_logging_level(verbose: u8) {
