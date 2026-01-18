@@ -35,7 +35,7 @@ Optionally, you may compile with memory-mapped file support by building with the
 
     cargo build --release --features memmap2
 
-This should give a 5-20% speedup when hashing uncompressed rom files fom the file system, depending on the drive and the file system in use, but will have no impact on compressed file hashing irregardless.
+This should give a 5-20% speedup when hashing uncompressed rom files from the file system, depending on the drive and the file system in use, but will have no impact on compressed file hashing irregardless.
 
 Usage
 -----

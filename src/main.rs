@@ -341,7 +341,7 @@ fn process_rom_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) 
     let mut found_games = GameMap::new();
 
     match File::open(file_path).map_err(anyhow::Error::from).and_then(|f| {
-        let mmap = unsafe { Mmap::map(&f).unwrap() };
+        let mmap = unsafe { Mmap::map(&f)? };
         let hash_string = args.method.hash_data_buffer(&mmap)?;
         check_file(args, df_xml, file_path, &hash_string, true)
     }) {
