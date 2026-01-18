@@ -15,6 +15,7 @@ digest = "0.10.7"
 dotenvy = "0.15.7"
 log = "0.4.29"
 md-5 = "0.10.6"
+memmap2 = { version = "0.9.9", optional = true }
 rayon = "1.11.0"
 roxmltree = "0.21.1"
 sha1 = "0.10.6"
@@ -28,4 +29,7 @@ zip = "7.1.0"
 strip = "debuginfo" # strip any debug information from binary, but not symbols
 opt-level = "z" # optimize for size, actually faster in this case
 lto = true # link time optimization for smaller faster code across compilation units
+
+[features]
+memmap2 = ["dep:memmap2"]
 

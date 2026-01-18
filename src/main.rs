@@ -14,6 +14,9 @@ use roxmltree::{Document, Node};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 
+#[cfg(feature = "memmap2")]
+use memmap2::Mmap;
+
 type NodeSet<'x> = BTreeSet<Node<'x, 'x>>;
 type GameMap<'x> = BTreeMap<Node<'x, 'x>, NodeSet<'x>>;
 
@@ -154,6 +157,15 @@ impl MatchMethod {
             MatchMethod::Sha256 => calc_sha256_for_reader(reader),
             MatchMethod::Sha1 => calc_sha1_for_reader(reader),
             MatchMethod::Md5 => calc_md5_for_reader(reader),
+        }
+    }
+
+    #[cfg(feature = "memmap2")]
+    fn hash_data_buffer(&self, buffer: &[u8]) -> Result<String> {
+        match self {
+            MatchMethod::Sha256 => calc_sha256_for_buffer(buffer),
+            MatchMethod::Sha1 => calc_sha1_for_buffer(buffer),
+            MatchMethod::Md5 => calc_md5_for_buffer(buffer),
         }
     }
 }
@@ -323,6 +335,31 @@ fn process_file<'x>(args: &Cli, df_xml: &'x Document, exclusions: &BTreeSet<Stri
     }
 }
 
+#[cfg(feature = "memmap2")]
+fn process_rom_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) -> GameMap<'x> {
+    //use a b-tree map for natural sorting
+    let mut found_games = GameMap::new();
+
+    match File::open(file_path).map_err(anyhow::Error::from).and_then(|f| {
+        let mmap = unsafe { Mmap::map(&f)? };
+        let hash_string = args.method.hash_data_buffer(&mmap)?;
+        check_file(args, df_xml, file_path, &hash_string, true)
+    }) {
+        Ok(found_rom_nodes) => {
+            for rom_node in found_rom_nodes {
+                if let Some(game_node) = rom_node.parent().filter(is_game_node) {
+                    //use a b-tree set for natural sorting
+                    found_games.entry(game_node).or_default().insert(rom_node);
+                };
+            }
+        }
+        Err(error) => warn!("could not process '{file_path}', skipping; error was '{error}'"),
+    }
+
+    found_games
+}
+
+#[cfg(not(feature = "memmap2"))]
 fn process_rom_file<'x>(args: &Cli, df_xml: &'x Document, file_path: &Utf8Path) -> GameMap<'x> {
     //use a b-tree map for natural sorting
     let mut found_games = GameMap::new();
@@ -560,17 +597,21 @@ fn hash_zip_file_contents(file: &Utf8Path, method: MatchMethod) -> Result<BTreeM
     let mut zip = zip::ZipArchive::new(f).with_context(|| format!("could not open '{file}' as a zip file"))?;
     let mut found_files = BTreeMap::new();
     for i in 0..zip.len() {
-        let mut inner_file = zip.by_index(i)?; //fix error
-        if inner_file.is_file() {
-            match method.hash_data(&mut inner_file) {
-                Ok(hash) => {
-                    debug!("hash for {} in zip {} is {}", inner_file.name(), file, hash);
-                    found_files.insert(inner_file.name().to_string(), hash);
-                }
-                Err(error) => {
-                    warn!("could not process '{}' in zip file '{file}', error was '{error}'", inner_file.name())
+        match zip.by_index(i) {
+            Ok(mut inner_file) => {
+                if inner_file.is_file() {
+                    match method.hash_data(&mut inner_file) {
+                        Ok(hash) => {
+                            debug!("hash for {} in zip {} is {}", inner_file.name(), file, hash);
+                            found_files.insert(inner_file.name().to_string(), hash);
+                        }
+                        Err(error) => warn!("could not process '{}' in zip file '{file}', error was '{error}'", inner_file.name()),
+                    }
+                } else {
+                    info!("skipping entry {i} in zip file '{file}' as it is not a file");
                 }
             }
+            Err(error) => warn!("could not process entry {i} in zip file '{file}', error was '{error}'"),
         }
     }
     Ok(found_files)

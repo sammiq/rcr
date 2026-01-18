@@ -9,18 +9,14 @@ It supports stand-alone files and sets in zip files and loading parameters from 
 History
 -------
 
-While looking around for a simple verification tool for rom/iso verification, I found very few that were not built
-specifically for Windows.
+While looking around for a simple verification tool for rom/iso verification, I found very few that were not built specifically for Windows and/or are not command-line based.
 
-After having written `check-roms` in Go, I thought I would port at least the basics to Rust.
-
-NOTE: This is probably NOT a good place to look for decent Rust code as this is literally the first thing I've ever
-written in the language; really, look elsewhere.
+My aim with this tool is to provide something reasonably portable and useful as a command-line only tool.
 
 Installation
 ------------
 
-Prebuild binaries are available on the [Releases](https://github.com/sammiq/rcr/releases) page for Linux, Mac OS and Windows.
+Prebuild binaries are available on the [Releases](https://github.com/sammiq/rcr/releases) page for Linux and Windows.
 
 Wildcards are supported in Windows by the use of the [wild](https://docs.rs/crate/wild/latest) crate.
 
@@ -33,7 +29,13 @@ Build the tool with:
 
     cargo build --release
 
-IMPORTANT: Performance will be *terrible* without compiling for release, the SHA hash code is incredibly slow when unoptimised.
+IMPORTANT: Performance will be *terrible* without compiling for release, the SHA hash code is incredibly slow without compiler optimization.
+
+Optionally, you may compile with memory-mapped file support by building with the appropriate `feature` enabled:
+
+    cargo build --release --features memmap2
+
+This should give a 5-20% speedup when hashing uncompressed rom files from the file system, depending on the drive and the file system in use, but will have no impact on compressed file hashing irregardless.
 
 Usage
 -----
@@ -77,7 +79,7 @@ Usage
     -v, --verbose...            verbose mode, add more of these for more information
                                 [env: RCR_VERBOSE=]
     -w, --warning <WARNING>     which warning items to print after scan
-                                [env: RCR_MISSING=] [default: all]
+                                [env: RCR_WARNING=] [default: all]
                                 [possible values: files, sets, all, none]
     -W, --workers <WORKERS>     number of threads to use for processing,
                                 may decrease performance if I/O bound
