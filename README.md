@@ -56,15 +56,15 @@ Usage
     -F, --fast                  fast match mode for single rom games,
                                 may show incorrect names if multiple identical hashes
                                 [env: RCR_FAST=]
-    -f, --found <FOUND>         which found and matching items to print after scan
-                                [env: RCR_FOUND=] [default: all]
-                                [possible values: files, sets, all, none]
+    -f, --found <FOUND>         filter for printing information on found/matched items
+                                [env: RCR_FOUND=]
+                                [default: all] [possible values: files, sets, all, none]
     -i, --ignore-suffix         ignore the suffix when checking for name match
                                 [env: RCR_IGNORE_SUFFIX=]
     -M, --method <METHOD>       default method to use for matching reference entries
                                 [env: RCR_METHOD=] [default: sha1]
                                 [possible values: sha256, sha1, md5]
-    -m, --missing <MISSING>     which missing items to print after scan
+    -m, --missing <MISSING>     filter for printing information on missing/unknown items
                                 [env: RCR_MISSING=] [default: all]
                                 [possible values: files, sets, all, none]
     -r, --rename                rename mismatched files to reference filename if unambiguous
@@ -78,7 +78,7 @@ Usage
                                 [env: RCR_SORT=] [default: .]
     -v, --verbose...            verbose mode, add more of these for more information
                                 [env: RCR_VERBOSE=]
-    -w, --warning <WARNING>     which warning items to print after scan
+    -w, --warning <WARNING>     filter for printing information on misnamed, partial and ambiguous items
                                 [env: RCR_WARNING=] [default: all]
                                 [possible values: files, sets, all, none]
     -W, --workers <WORKERS>     number of threads to use for processing,
