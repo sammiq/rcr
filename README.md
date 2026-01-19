@@ -123,7 +123,7 @@ Usage
             Possible values:
             - none:    No sorting
             - unknown: Unmatched files/archives are moved to 'unknown' directory
-            - matched: Matched files/archives are moved to 'unknown' directory
+            - matched: Matched files/archives are moved to 'matched' directory
             - warning: Misnamed files or partial sets in archives are moved to 'warning' directory
             - all:     All files/archives are moved to the appropriate directory
 

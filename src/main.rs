@@ -36,7 +36,7 @@ struct Cli {
     #[clap(short, long, value_parser, value_hint = ValueHint::FilePath, env = "RCR_DATFILE")]
     dat_file: Utf8PathBuf,
 
-    /// comma seperated list of suffixes to exclude when scanning,
+    /// comma separated list of suffixes to exclude when scanning,
     /// overrides any files on command line
     #[clap(
         short,

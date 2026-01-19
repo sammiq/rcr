@@ -102,7 +102,7 @@ pub enum SortOption {
     None,
     /// Unmatched files/archives are moved to 'unknown' directory
     Unknown,
-    /// Matched files/archives are moved to 'unknown' directory
+    /// Matched files/archives are moved to 'matched' directory
     Matched,
     /// Misnamed files or partial sets in archives are moved to 'warning' directory
     Warning,
