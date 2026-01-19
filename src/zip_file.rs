@@ -83,11 +83,14 @@ fn filter_zip_matches<'x>(
     unique_games: &mut NodeSet<'x>,
 ) -> bool {
     let full_games: NodeSet = unique_games
-        .extract_if(.., |game_node| {
+        .iter()
+        .filter(|game_node| {
             let rom_count = game_node.children().filter(is_rom_node).count();
             rom_count == found_games[game_node].len()
         })
+        .cloned()
         .collect();
+
     let exact_matches = !full_games.is_empty();
     if exact_matches {
         //only keep the exact matches, the others are irrelevant
@@ -106,11 +109,14 @@ fn filter_zip_matches<'x>(
 fn filter_zip_matches_by_count(num_files: usize, found_games: &mut GameMap, unique_games: &mut NodeSet) {
     //ignore partial matches if the count of files inside the zip is too small
     let full_games: NodeSet = unique_games
-        .extract_if(.., |game_node| {
+        .iter()
+        .filter(|game_node| {
             let rom_count = game_node.children().filter(is_rom_node).count();
             rom_count <= num_files
         })
+        .cloned()
         .collect();
+
     if !full_games.is_empty() {
         *unique_games = full_games;
         found_games.retain(|game_node, _| unique_games.contains(game_node));
