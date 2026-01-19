@@ -19,7 +19,7 @@ pub fn process_zip_file<'x>(options: &ProcessingOptions, df_xml: &'x Document, f
     //use a b-tree map for natural sorting
     let mut found_games = GameMap::new();
 
-    if let Err(error) = hash_zip_file_contents(file_path, options.matches.method).map(|hashed| {
+    if let Err(error) = hash_zip_file_contents(file_path, options.matches.method).and_then(|hashed| {
         let mut unique_games = NodeSet::new();
 
         for (file, hash_string) in &hashed {
@@ -43,7 +43,7 @@ pub fn process_zip_file<'x>(options: &ProcessingOptions, df_xml: &'x Document, f
             filter_zip_matches(&options.matches, df_xml, file_path, hashed.len(), &mut found_games, &mut unique_games);
         report_zip_file(&options.output, file_path, &unique_games, exact_matches)
     }) {
-        warn!("could not process '{file_path}', error was '{error}'")
+        warn!("could not process '{file_path}', error was '{error}'");
     }
 
     found_games
