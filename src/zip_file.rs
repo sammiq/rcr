@@ -143,31 +143,29 @@ fn filter_zip_matches_by_name<'x>(
     unique_games: &mut NodeSet<'x>,
 ) {
     //check whether the zip file is named after a game, and treat it like that game if so.
-    if let Ok(zip_name) = expect_file_name(file_path) {
-        if let Some(game_node) = df_xml
-            .root_element()
-            .children()
-            .find(|node| is_game_node(node) && match_game_name(node, zip_name))
-        {
-            //we should treat this as the desired game and not rely on the hash information
-            if unique_games.iter().any(|game_node| match_game_name(game_node, zip_name)) {
-                //contains the game already, so remove the others
-                unique_games.retain(|game_node| match_game_name(game_node, zip_name));
-                found_games.retain(|game_node, _| unique_games.contains(game_node));
-            } else {
-                //doesn't contain the game to add a blank entry for it
-                unique_games.clear();
-                unique_games.insert(game_node);
-                found_games.clear();
-                found_games.insert(game_node, NodeSet::new());
-            }
+    if let Some(game_node) = df_xml
+        .root_element()
+        .children()
+        .find(|node| is_game_node(node) && match_game_name(node, file_path))
+    {
+        //we should treat this as the desired game and not rely on the hash information
+        if unique_games.iter().any(|game_node| match_game_name(game_node, file_path)) {
+            //contains the game already, so remove the others
+            unique_games.retain(|game_node| match_game_name(game_node, file_path));
+            found_games.retain(|game_node, _| unique_games.contains(game_node));
+        } else {
+            //doesn't contain the game to add a blank entry for it
+            unique_games.clear();
+            unique_games.insert(game_node);
+            found_games.clear();
+            found_games.insert(game_node, NodeSet::new());
         }
     }
 }
 
-fn match_game_name(node: &Node, file_name: &str) -> bool {
+fn match_game_name(node: &Node, file_path: &Utf8Path) -> bool {
     get_name_from_node(node)
-        .map(|node_name| match_filename(file_name, node_name, true))
+        .and_then(|node_name| file_path.file_stem().map(|zip_name| node_name == zip_name))
         .unwrap_or_default()
 }
 
