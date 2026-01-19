@@ -93,16 +93,22 @@ fn filter_zip_matches<'x>(
 
     let exact_matches = !full_games.is_empty();
     if exact_matches {
-        //only keep the exact matches, the others are irrelevant
+        //if there are matches for all items, then these are the returned matches
         *unique_games = full_games;
         found_games.retain(|game_node, _| unique_games.contains(game_node));
     } else {
-        filter_zip_matches_by_name(df_xml, file_path, found_games, unique_games);
+            filter_zip_matches_by_name(df_xml, file_path, found_games, unique_games);
+            match matches.mode {
+                MatchMode::Any => {},
+                MatchMode::Partial => filter_zip_matches_by_count(num_files, found_games, unique_games),
+                MatchMode::Strict => {
+                    //if there are no exact matches, then treat this like no matches
+                    unique_games.clear();
+                    found_games.clear()
+                },
+            }
     }
 
-    if !matches.any_contents {
-        filter_zip_matches_by_count(num_files, found_games, unique_games);
-    }
     exact_matches
 }
 

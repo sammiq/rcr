@@ -19,11 +19,6 @@ macro_rules! println_if {
 
 #[derive(Debug, Args)]
 pub struct MatchOptions {
-    /// count any matches in a zip file as a match, otherwise
-    /// the file count must match for a partial match
-    #[clap(short, long, verbatim_doc_comment, env = "RCR_ANY_CONTENTS")]
-    pub any_contents: bool,
-
     /// fast match mode for single rom games,
     /// may show incorrect names if multiple identical hashes
     #[clap(short('F'), long, verbatim_doc_comment, env = "RCR_FAST")]
@@ -36,6 +31,10 @@ pub struct MatchOptions {
     /// default method to use for matching reference entries
     #[clap(short('M'), long, value_enum, default_value_t = MatchMethod::Sha1, verbatim_doc_comment, env = "RCR_METHOD")]
     pub method: MatchMethod,
+
+    /// default mode to use for matching compressed files to sets
+    #[clap(long, value_enum, default_value_t = MatchMode::Strict, env = "RCR_MODE")]
+    pub mode: MatchMode,
 }
 
 #[derive(Debug, Args)]
@@ -75,11 +74,40 @@ pub struct ProcessingOptions {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
+pub enum MatchMode {
+    /// Match sets if any item matches in archive
+    Any,
+    /// Allow partial matches based on files in archive
+    Partial,
+    /// Match sets only if entire contents match
+    Strict
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
 pub enum OutputFilter {
+    /// Output information about files only
     Files,
+    /// Output information about sets only
     Sets,
+    /// Output information about files and sets
     All,
+    /// Output no information about files and sets
     None,
+}
+
+
+#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
+pub enum SortOption {
+    /// No sorting
+    None,
+    /// Unmatched files/archives are moved to 'unknown' directory
+    Unknown,
+    /// Matched files/archives are moved to 'unknown' directory
+    Matched,
+    /// Misnamed files or partial sets in archives are moved to 'warning' directory
+    Warning,
+    /// All files/archives are moved to the appropriate directory
+    All,
 }
 
 impl OutputFilter {
@@ -203,14 +231,6 @@ pub fn check_file<'a>(
     Ok(found_nodes)
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
-pub enum SortOption {
-    None,
-    Unknown,
-    Matched,
-    Warning, //misnamed or something incomplete
-    All,
-}
 
 pub fn sort_file(output: &OutputOptions, file_path: &Utf8Path, sort: SortOption, allow_sort: bool) {
     if allow_sort && (output.sort == sort || output.sort == SortOption::All) {
