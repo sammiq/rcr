@@ -198,15 +198,13 @@ fn sanity_check_match_method_inner(df_xml: &Document, method: MatchMethod, recur
     {
         Ok(method)
     } else {
-        match method {
-            MatchMethod::Sha256 => sanity_check_match_method_inner(df_xml, MatchMethod::Sha1, recursion + 1),
-            MatchMethod::Sha1 => sanity_check_match_method_inner(df_xml, MatchMethod::Md5, recursion + 1),
-            MatchMethod::Md5 => {
-                //if we hit here and recursion > 0 then don't keep going as it means we've already tried Sha1
-                ensure!(recursion == 0, "no valid methods found in reference dat file");
-                sanity_check_match_method_inner(df_xml, MatchMethod::Sha1, recursion + 1)
-            }
-        }
+        ensure!(recursion < 2, "no valid methods found in reference dat file");
+        let next = match method {
+            MatchMethod::Sha256 => MatchMethod::Sha1,
+            MatchMethod::Sha1 => MatchMethod::Md5,
+            MatchMethod::Md5 => MatchMethod::Sha256,
+        };
+        sanity_check_match_method_inner(df_xml, next, recursion + 1)
     }
 }
 

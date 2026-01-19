@@ -141,15 +141,12 @@ fn filter_zip_matches_by_name<'x>(
         if let Some(game_node) = df_xml
             .root_element()
             .children()
-            .find(|node| is_game_node(node) && get_name_from_node(node) == Some(zip_name))
+            .find(|node| is_game_node(node) && match_game_name(node, zip_name))
         {
             //we should treat this as the desired game and not rely on the hash information
-            if unique_games
-                .iter()
-                .any(|game_node| get_name_from_node(game_node) == Some(zip_name))
-            {
+            if unique_games.iter().any(|game_node| match_game_name(game_node, zip_name)) {
                 //contains the game already, so remove the others
-                unique_games.retain(|game_node| get_name_from_node(game_node) == Some(zip_name));
+                unique_games.retain(|game_node| match_game_name(game_node, zip_name));
                 found_games.retain(|game_node, _| unique_games.contains(game_node));
             } else {
                 //doesn't contain the game to add a blank entry for it
@@ -160,6 +157,12 @@ fn filter_zip_matches_by_name<'x>(
             }
         }
     }
+}
+
+fn match_game_name(node: &Node, file_name: &str) -> bool {
+    get_name_from_node(node)
+        .map(|node_name| match_filename(file_name, node_name, true))
+        .unwrap_or_default()
 }
 
 fn report_zip_file(output: &OutputOptions, file_path: &Utf8Path, unique_games: &NodeSet, exact_matches: bool) -> Result<()> {
@@ -217,7 +220,7 @@ fn rename_to_game(file_path: &Utf8Path, game_name: &str) -> Result<Utf8PathBuf> 
         debug!("renaming {file_path} to {new_file_name}");
         let result = rename_file_if_possible(file_path, &new_file_name);
         match &result {
-            Ok(new_path) => info!("{new_path} (renamed from {file_path}"),
+            Ok(new_path) => info!("{new_path} (renamed from {file_path})"),
             Err(err) => warn!("could not rename '{file_path}' to '{new_file_name}' - {err}"),
         }
         result

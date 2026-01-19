@@ -3,7 +3,7 @@ use crate::file_ops::*;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use clap::{Args, ValueEnum};
+use clap::{Args, ValueEnum, ValueHint};
 use log::{debug, info, trace, warn};
 use roxmltree::{Document, Node};
 
@@ -61,7 +61,7 @@ pub struct OutputOptions {
     pub sort: SortOption,
 
     /// base directory to use when sorting files
-    #[clap(short('S'), long, value_enum, default_value = ".", env = "RCR_SORT")]
+    #[clap(short('S'), long, value_parser, value_hint = ValueHint::DirPath, default_value = ".", env = "RCR_SORTDIR")]
     pub sort_dir: Utf8PathBuf,
 }
 
@@ -156,7 +156,7 @@ pub fn check_file<'a>(
                 match rename_file_if_possible(file_path, node_name) {
                     Ok(new_path) => {
                         print_file_hash(&options.output, hash, &new_path, MatchType::Matched(Some(file_path.to_string())));
-                        sort_file(&options.output, file_path, SortOption::Matched, allow_move);
+                        sort_file(&options.output, &new_path, SortOption::Matched, allow_move);
                     }
                     Err(err) => {
                         warn!("could not rename '{file_path}' to '{node_name}' - {err}");
@@ -206,7 +206,7 @@ pub enum SortOption {
 }
 
 pub fn sort_file(output: &OutputOptions, file_path: &Utf8Path, sort: SortOption, allow_sort: bool) {
-    if allow_sort && output.sort == sort || output.sort == SortOption::All {
+    if allow_sort && (output.sort == sort || output.sort == SortOption::All) {
         let subdir = match sort {
             SortOption::Unknown => "unknown",
             SortOption::Matched => "matched",
@@ -231,7 +231,7 @@ fn print_file_hash(output: &OutputOptions, hash: &str, file_path: &Utf8Path, mat
     match match_type {
         MatchType::Matched(old_name) => {
             if let Some(old_name) = old_name {
-                println_if!(output.found.output_files(), "[ OK ] {hash} {file_path} (renamed from {old_name}");
+                println_if!(output.found.output_files(), "[ OK ] {hash} {file_path} (renamed from {old_name})");
             } else {
                 println_if!(output.found.output_files(), "[ OK ] {hash} {file_path} ");
             }
