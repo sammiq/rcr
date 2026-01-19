@@ -23,7 +23,7 @@ Wildcards are supported in Windows by the use of the [wild](https://docs.rs/crat
 Building
 --------
 
-You need a recent [Rust](https://www.rust-lang.org) installation (I use Rust 1.91 on Fedora 23).
+You need a recent [Rust](https://www.rust-lang.org) installation (I use Rust 1.91 on Fedora 43).
 
 Build the tool with:
 
@@ -39,53 +39,137 @@ This should give a 5-20% speedup when hashing uncompressed rom files from the fi
 
 Usage
 -----
+
     Usage: rcr [OPTIONS] --dat-file <DAT_FILE> <FILES>...
 
     Arguments:
-    <FILES>...  list of files to check against reference dat file
+    <FILES>...
+            list of files to check against reference dat file
 
     Options:
-    -a, --any-contents          count any matches in a zip file as a match, otherwise
-                                the file count must match for a partial match
-                                [env: RCR_ANY_CONTENTS=]
-    -d, --dat-file <DAT_FILE>   name of the dat file to use as reference
-                                [env: RCR_DATFILE=]
-    -e, --exclude <EXCLUDE>...  comma seperated list of suffixes to exclude when scanning,
-                                overrides any files on command line
-                                [env: RCR_EXCLUDE=] [default: m3u,dat,txt]
-    -F, --fast                  fast match mode for single rom games,
-                                may show incorrect names if multiple identical hashes
-                                [env: RCR_FAST=]
-    -f, --found <FOUND>         filter for printing information on found/matched items
-                                [env: RCR_FOUND=]
-                                [default: all] [possible values: files, sets, all, none]
-    -i, --ignore-suffix         ignore the suffix when checking for name match
-                                [env: RCR_IGNORE_SUFFIX=]
-    -M, --method <METHOD>       default method to use for matching reference entries
-                                [env: RCR_METHOD=] [default: sha1]
-                                [possible values: sha256, sha1, md5]
-    -m, --missing <MISSING>     filter for printing information on missing/unknown items
-                                [env: RCR_MISSING=] [default: all]
-                                [possible values: files, sets, all, none]
-    -r, --rename                rename mismatched files to reference filename if unambiguous
-                                [env: RCR_RENAME=]
-    -R, --recurse               recurse into directories specified on command line
-                                [env: RCR_RECURSE=]
-    -s, --sort <SORT>           sort files into directories based on match status
-                                [env: RCR_SORT=] [default: none]
-                                [possible values: none, unknown, matched, warning, all]
-    -S, --sort-dir <SORT_DIR>   base directory to use when sorting files
-                                [env: RCR_SORT=] [default: .]
-    -v, --verbose...            verbose mode, add more of these for more information
-                                [env: RCR_VERBOSE=]
-    -w, --warning <WARNING>     filter for printing information on misnamed, partial and ambiguous items
-                                [env: RCR_WARNING=] [default: all]
-                                [possible values: files, sets, all, none]
-    -W, --workers <WORKERS>     number of threads to use for processing,
-                                may decrease performance if I/O bound
-                                [env: RCR_WORKERS=] [default: 1]
-    -h, --help                  Print help
-    -V, --version               Print version
+    -F, --fast
+            fast match mode for single rom games,
+            may show incorrect names if multiple identical hashes
+
+            [env: RCR_FAST=]
+
+    -i, --ignore-suffix
+            ignore the suffix when checking for name match
+
+            [env: RCR_IGNORE_SUFFIX=]
+
+    -M, --method <METHOD>
+            default method to use for matching reference entries
+
+            [env: RCR_METHOD=]
+            [default: sha1]
+            [possible values: sha256, sha1, md5]
+
+        --mode <MODE>
+            default mode to use for matching compressed files to sets
+
+            Possible values:
+            - any:     Match sets if any item matches in archive
+            - partial: Allow partial matches based on files in archive
+            - strict:  Match sets only if entire contents match
+
+            [env: RCR_MODE=]
+            [default: strict]
+
+    -f, --found <FOUND>
+            filter for printing information on found/matched items
+
+            Possible values:
+            - files: Output information about files only
+            - sets:  Output information about sets only
+            - all:   Output information about files and sets
+            - none:  Output no information about files and sets
+
+            [env: RCR_FOUND=]
+            [default: all]
+
+    -m, --missing <MISSING>
+            filter for printing information on missing/unknown items
+
+            Possible values:
+            - files: Output information about files only
+            - sets:  Output information about sets only
+            - all:   Output information about files and sets
+            - none:  Output no information about files and sets
+
+            [env: RCR_MISSING=]
+            [default: all]
+
+    -w, --warning <WARNING>
+            filter for printing information on misnamed, partial and ambiguous items
+
+            Possible values:
+            - files: Output information about files only
+            - sets:  Output information about sets only
+            - all:   Output information about files and sets
+            - none:  Output no information about files and sets
+
+            [env: RCR_WARNING=]
+            [default: all]
+
+    -r, --rename
+            rename mismatched files to reference filename if unambiguous
+
+            [env: RCR_RENAME=]
+
+    -s, --sort <SORT>
+            sort files into directories based on match status
+
+            Possible values:
+            - none:    No sorting
+            - unknown: Unmatched files/archives are moved to 'unknown' directory
+            - matched: Matched files/archives are moved to 'matched' directory
+            - warning: Misnamed files or partial sets in archives are moved to 'warning' directory
+            - all:     All files/archives are moved to the appropriate directory
+
+            [env: RCR_SORT=]
+            [default: none]
+
+    -S, --sort-dir <SORT_DIR>
+            base directory to use when sorting files
+
+            [env: RCR_SORTDIR=]
+            [default: .]
+
+    -d, --dat-file <DAT_FILE>
+            name of the dat file to use as reference
+
+            [env: RCR_DATFILE=]
+
+    -e, --exclude <EXCLUDE>...
+            comma seperated list of suffixes to exclude when scanning,
+            overrides any files on command line
+
+            [env: RCR_EXCLUDE=]
+            [default: m3u,dat,txt]
+
+    -R, --recurse
+            recurse into directories specified on command line
+
+            [env: RCR_RECURSE=]
+
+    -W, --workers <WORKERS>
+            number of threads to use for processing,
+            may decrease performance if I/O bound
+
+            [env: RCR_WORKERS=]
+            [default: 1]
+
+    -v, --verbose...
+            verbose mode, add more of these for more information
+
+            [env: RCR_VERBOSE=]
+
+    -h, --help
+            Print help (see a summary with '-h')
+
+    -V, --version
+            Print version
 
 
 
