@@ -137,37 +137,40 @@ pub fn check_file<'a>(
     debug!("hash for '{file_path}' ('{file_name}') = {hash}");
     let mut found_nodes = find_rom_nodes_by_hash(df_xml, options.matches.method.as_str(), hash, options.matches.fast);
     debug!("found nodes by hash {:?}", found_nodes);
-    match found_nodes.len() {
+
+    let mut path = file_path.to_owned();
+    let sort_option = match found_nodes.len() {
         0 => {
             trace!("found no matches, the file appears to be unknown");
             print_file_hash(&options.output, hash, file_path, MatchType::Unknown);
-            sort_file(&options.output, file_path, SortOption::Unknown, allow_move);
+
+            SortOption::Unknown
         }
         1 => {
             trace!("found single match, will use this one");
             let node = found_nodes.first().expect("should never fail as we checked length");
             let node_name = get_name_from_node(node).context("rom nodes in reference dat file should always have a name")?;
 
-            if match_filename(file_name, node_name, options.matches.ignore_suffix) {
-                print_file_hash(&options.output, hash, file_path, MatchType::Matched(Option::None));
-                sort_file(&options.output, file_path, SortOption::Matched, allow_move);
+            let (match_type, sort_option) = if match_filename(file_name, node_name, options.matches.ignore_suffix) {
+                (MatchType::Matched(Option::None), SortOption::Matched)
             } else if allow_move && options.output.rename {
                 debug!("renaming {file_path} to {node_name}");
                 match rename_file_if_possible(file_path, node_name) {
                     Ok(new_path) => {
-                        print_file_hash(&options.output, hash, &new_path, MatchType::Matched(Some(file_path.to_string())));
-                        sort_file(&options.output, &new_path, SortOption::Matched, allow_move);
+                        path = new_path.clone();
+                        (MatchType::Matched(Some(file_path.to_string())), SortOption::Matched)
                     }
                     Err(err) => {
                         warn!("could not rename '{file_path}' to '{node_name}' - {err}");
-                        print_file_hash(&options.output, hash, file_path, MatchType::Warning(node_name.to_string()));
-                        sort_file(&options.output, file_path, SortOption::Warning, allow_move);
+                        (MatchType::Warning(node_name.to_string()), SortOption::Warning)
                     }
                 }
             } else {
-                print_file_hash(&options.output, hash, file_path, MatchType::Warning(node_name.to_string()));
-                sort_file(&options.output, file_path, SortOption::Warning, allow_move);
-            }
+                (MatchType::Warning(node_name.to_string()), SortOption::Warning)
+            };
+            print_file_hash(&options.output, hash, &path, match_type);
+
+            sort_option
         }
         _ => {
             trace!("found multiple matches for hash, trying to match by name");
@@ -178,7 +181,8 @@ pub fn check_file<'a>(
                 trace!("found at least one match for name, the file is ok, remove other nodes");
                 found_nodes.retain(|node| match_rom_filename(node, file_name, options.matches.ignore_suffix));
                 print_file_hash(&options.output, hash, file_path, MatchType::Matched(Option::None));
-                sort_file(&options.output, file_path, SortOption::Matched, allow_move);
+
+                SortOption::Matched
             } else {
                 trace!("found no matches for name, the file is misnamed but could be multiple options");
                 if options.output.warning.output_files() {
@@ -189,10 +193,13 @@ pub fn check_file<'a>(
                         .for_each(|name| println!("       {hash} {name}"));
                 }
 
-                sort_file(&options.output, file_path, SortOption::Warning, allow_move);
+                SortOption::Warning
             }
         }
-    }
+    };
+
+    sort_file(&options.output, &path, sort_option, allow_move);
+
     Ok(found_nodes)
 }
 

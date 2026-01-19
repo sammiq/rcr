@@ -166,36 +166,29 @@ fn match_game_name(node: &Node, file_name: &str) -> bool {
 }
 
 fn report_zip_file(output: &OutputOptions, file_path: &Utf8Path, unique_games: &NodeSet, exact_matches: bool) -> Result<()> {
-    match unique_games.len() {
+    let mut path = file_path.to_owned();
+    let sort_option = match unique_games.len() {
         0 => {
             info!("zip file '{file_path}' seems to match no games");
             println_if!(
                 output.missing.output_files(),
                 "[MISS] ---------------------------------------- {file_path} - unknown, no match"
             );
-            sort_file(output, file_path, SortOption::Unknown, true);
+
+            SortOption::Unknown
         }
         1 => {
             let game_node = unique_games.first().expect("should never fail as we checked length");
             let game_name = get_name_from_node(game_node).context("game nodes in reference dat file should always have a name")?;
             info!("zip file '{file_path}' matches {game_name}");
 
-            let current_file_path = if output.rename {
-                rename_to_game(file_path, game_name)?
-            } else {
-                file_path.to_path_buf()
-            };
+            path = if output.rename { rename_to_game(file_path, game_name)? } else { file_path.to_path_buf() };
 
-            sort_file(
-                output,
-                &current_file_path,
-                if exact_matches {
-                    SortOption::Matched
-                } else {
-                    SortOption::Warning
-                },
-                true,
-            );
+            if exact_matches {
+                SortOption::Matched
+            } else {
+                SortOption::Warning
+            }
         }
         _ => {
             info!("zip file '{file_path}' seems to match multiple games, could be one of:");
@@ -204,9 +197,12 @@ fn report_zip_file(output: &OutputOptions, file_path: &Utf8Path, unique_games: &
                 .flat_map(get_name_from_node)
                 .for_each(|name| info!("       {name}"));
 
-            sort_file(output, file_path, SortOption::Warning, true);
+            SortOption::Warning
         }
-    }
+    };
+
+    sort_file(output, &path, sort_option, true);
+
     Ok(())
 }
 
