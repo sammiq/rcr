@@ -1,10 +1,10 @@
 # .github/workflows/new-release.yml
 name: Release
 
-on: workflow_dispatch
-# currently manual only for testing purposes
-#  release:
-#    types: [created]
+on:
+  workflow_dispatch:
+  release:
+    types: [created]
 
 jobs:
   new_release:
@@ -40,14 +40,14 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Build artifacts
         run: cargo build --locked --release --features memmap2 --target ${{ matrix.target }}
-      - name: Package artifacts
+      - name: Package artifacts (Non-Windows)
         if: matrix.build != 'windows'
         run: |
           cd target/${{ matrix.target }}/release
           ARCHIVE=rcr_${{ matrix.target }}.zip
           zip -9r ${ARCHIVE} ${{ matrix.binary }}
           printf "%s %s" "$(sha256sum "${ARCHIVE}" | cut -d ' ' -f 1)" "$ARCHIVE" > "${ARCHIVE}.sha256sum"
-      - name: Package artifacts
+      - name: Package artifacts (Windows)
         if: matrix.build == 'windows'
         shell: pwsh
         run: |
@@ -56,9 +56,21 @@ jobs:
           Compress-Archive -Path ${{ matrix.binary }} -DestinationPath $ARCHIVE -CompressionLevel Optimal
           $hash = (Get-FileHash $ARCHIVE -Algorithm SHA256).Hash.ToLower()
           "$hash $ARCHIVE" | Out-File -Encoding ascii -NoNewline "$ARCHIVE.sha256sum"
-      # do this for the moment for testing
-      - name: Publish artifacts
+      - name: Upload release assets (release)
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/${{ matrix.target }}/release/rcr_${{ matrix.target }}.zip
+            target/${{ matrix.target }}/release/rcr_${{ matrix.target }}.zip.sha256sum
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts (manual)
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: rcr_${{ matrix.build }}
-          path: "target/${{ matrix.target }}/release/rcr_*"
+          path: |
+            target/${{ matrix.target }}/release/rcr_${{ matrix.target }}.zip
+            target/${{ matrix.target }}/release/rcr_${{ matrix.target }}.zip.sha256sum
